@@ -3,6 +3,9 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+# Working notes: plan of record and running progress log. Local only.
+.plans/
+
 # Updater signing keys must never be committed
 *.key
 *.key.pub
