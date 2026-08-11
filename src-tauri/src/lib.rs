@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+pub mod icmp;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostInfo {
