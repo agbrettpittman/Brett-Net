@@ -83,6 +83,55 @@ async fn start_monitor(
     Ok(())
 }
 
+/// Settings live in `%APPDATA%\<identifier>\settings.json`, which is separate
+/// from the install directory and so survives updates.
+///
+/// The payload is stored opaquely: the frontend owns the schema, so adding a
+/// field there needs no matching change here.
+fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("settings.json"))
+}
+
+#[tauri::command]
+fn load_settings(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let path = settings_path(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    // Notepad and PowerShell's `-Encoding utf8` both prepend a UTF-8 BOM, which
+    // serde_json rejects. Tolerate it so a hand-edited file still loads.
+    let trimmed = raw.trim_start_matches('\u{feff}');
+
+    match serde_json::from_str(trimmed) {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => {
+            // Do not fall back silently: the app would start on defaults and the
+            // next autosave would overwrite whatever the user had. Preserve it.
+            let backup = path.with_extension("json.bad");
+            let _ = std::fs::rename(&path, &backup);
+            Err(format!(
+                "settings.json could not be parsed ({e}). It was kept as \
+                 settings.json.bad and defaults were loaded."
+            ))
+        }
+    }
+}
+
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, value: serde_json::Value) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    let body = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+
+    // Write-then-rename, so a crash mid-write cannot truncate the real file.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn stop_monitor(state: tauri::State<'_, AppState>) {
     if let Some(existing) = state.monitor.lock().unwrap().take() {
@@ -113,7 +162,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             host_info,
             start_monitor,
-            stop_monitor
+            stop_monitor,
+            load_settings,
+            save_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

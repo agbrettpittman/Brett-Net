@@ -62,6 +62,22 @@ export function stopMonitor(): Promise<void> {
   return invoke('stop_monitor');
 }
 
+/** Persisted UI state. The backend stores this opaquely. */
+export interface Settings {
+  hosts: HostSpec[];
+  probeMs: number;
+  bucketSec: number;
+  spanSec: number;
+}
+
+export function loadSettings(): Promise<Settings | null> {
+  return invoke<Settings | null>('load_settings');
+}
+
+export function saveSettings(value: Settings): Promise<void> {
+  return invoke('save_settings', { value });
+}
+
 export function onPingTick(handler: (tick: PingTick) => void): Promise<UnlistenFn> {
   return listen<PingTick>(PING_TICK_EVENT, (event) => handler(event.payload));
 }

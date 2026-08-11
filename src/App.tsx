@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import {
   hostInfo,
+  loadSettings,
   onPingTick,
+  saveSettings,
   startMonitor,
   stopMonitor,
   STATUS_LABEL,
@@ -46,6 +48,8 @@ export default function App() {
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<HostSpec | null>(null);
+  /** Gates monitoring and saving until persisted settings have been read. */
+  const [loaded, setLoaded] = useState(false);
   const [probeMs, setProbeMs] = useState(1000);
   const [bucketSec, setBucketSec] = useState(5);
   const [spanSec, setSpanSec] = useState(300);
@@ -62,6 +66,32 @@ export default function App() {
   useEffect(() => {
     hostInfo().then(setInfo).catch((e: unknown) => setError(String(e)));
   }, []);
+
+  // Restore saved hosts and chart settings before anything starts probing,
+  // otherwise the defaults would be pinged briefly and then replaced.
+  useEffect(() => {
+    loadSettings()
+      .then((s) => {
+        if (s) {
+          if (s.hosts?.length) setHosts(s.hosts);
+          if (s.probeMs) setProbeMs(s.probeMs);
+          if (typeof s.bucketSec === 'number') setBucketSec(s.bucketSec);
+          if (typeof s.spanSec === 'number') setSpanSec(s.spanSec);
+        }
+      })
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => setLoaded(true));
+  }, []);
+
+  // Persist on change, debounced so dragging through select options does not
+  // write on every keystroke. Never runs before the load completes.
+  useEffect(() => {
+    if (!loaded) return;
+    const id = setTimeout(() => {
+      saveSettings({ hosts, probeMs, bucketSec, spanSec }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(id);
+  }, [loaded, hosts, probeMs, bucketSec, spanSec]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -104,6 +134,7 @@ export default function App() {
   // Monitoring is on by default: a monitoring tool should be monitoring when you
   // open it. Stop is one click.
   useEffect(() => {
+    if (!loaded) return;
     if (!enabled || hosts.length === 0) {
       stopMonitor().catch(() => {});
       return;
@@ -118,7 +149,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [hosts, enabled, probeMs]);
+  }, [hosts, enabled, probeMs, loaded]);
 
   const toggleRun = useCallback(() => {
     setError(null);
