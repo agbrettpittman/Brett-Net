@@ -9,6 +9,7 @@ function nextId(target: string) {
 }
 
 export function AddHosts({ onAdd }: { onAdd: (hosts: HostSpec[]) => void }) {
+  const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
 
@@ -27,10 +28,22 @@ export function AddHosts({ onAdd }: { onAdd: (hosts: HostSpec[]) => void }) {
       })),
     );
     setText('');
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-3 rounded-md border border-border px-2.5 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
+      >
+        + Add hosts
+      </button>
+    );
   }
 
   return (
-    <div className="mt-6 rounded-[var(--radius)] border border-border bg-surface p-4">
+    <div className="mt-3 rounded-[var(--radius)] border border-border bg-surface p-4">
       <label htmlFor="add-hosts" className="text-xs font-medium">
         Add hosts
       </label>
@@ -60,13 +73,25 @@ export function AddHosts({ onAdd }: { onAdd: (hosts: HostSpec[]) => void }) {
             ? `${preview.hosts.length} host${preview.hosts.length === 1 ? '' : 's'} ready`
             : 'Ctrl+Enter to add'}
         </span>
-        <button
-          onClick={submit}
-          disabled={!preview || preview.hosts.length === 0}
-          className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          Add
-        </button>
+        <span className="flex gap-2">
+          <button
+            onClick={() => {
+              setOpen(false);
+              setText('');
+              setErrors([]);
+            }}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!preview || preview.hosts.length === 0}
+            className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </span>
       </div>
 
       {errors.length > 0 && (

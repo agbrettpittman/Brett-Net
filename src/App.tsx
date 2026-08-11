@@ -11,7 +11,10 @@ import {
   type PingStatus,
 } from './lib/ipc';
 import { HostStats, formatMs } from './lib/stats';
+import { SeriesStore } from './lib/series';
+import { seriesStyle } from './lib/palette';
 import { AddHosts } from './components/AddHosts';
+import { LatencyChart } from './features/ping/LatencyChart';
 
 const DEFAULT_HOSTS: HostSpec[] = [
   { id: 'h-google-dns', label: 'Google DNS', target: '8.8.8.8' },
@@ -21,6 +24,8 @@ const DEFAULT_HOSTS: HostSpec[] = [
 
 const INTERVAL_MS = 1000;
 const TIMEOUT_MS = 2000;
+/** One hour of history at a one-second interval. */
+const HISTORY = 3600;
 /** The chrome re-renders on a timer, not per tick, to keep React off the hot path. */
 const REFRESH_MS = 500;
 
@@ -36,7 +41,8 @@ export default function App() {
   // High-frequency data lives outside React state.
   const stats = useRef(new Map<string, HostStats>());
   const lastStatus = useRef(new Map<string, PingStatus>());
-  const [, bumpFrame] = useState(0);
+  const store = useRef(new SeriesStore(HISTORY));
+  const [revision, setRevision] = useState(0);
 
   useEffect(() => {
     hostInfo().then(setInfo).catch((e: unknown) => setError(String(e)));
@@ -45,6 +51,7 @@ export default function App() {
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
     onPingTick((tick) => {
+      const column = new Map<string, number | null>();
       for (const r of tick.results) {
         let s = stats.current.get(r.hostId);
         if (!s) {
@@ -53,7 +60,14 @@ export default function App() {
         }
         s.add(r);
         lastStatus.current.set(r.hostId, r.status);
+        // Only a genuine reply from the target is a latency point. Timeouts and
+        // TTL-expired replies become gaps in the line.
+        column.set(
+          r.hostId,
+          r.status === 'success' && r.rttUs !== null ? r.rttUs / 1000 : null,
+        );
       }
+      store.current.push(tick.t / 1000, column);
     })
       .then((fn) => {
         unlisten = fn;
@@ -65,9 +79,20 @@ export default function App() {
 
   useEffect(() => {
     if (!running) return;
-    const id = setInterval(() => bumpFrame((n) => n + 1), REFRESH_MS);
+    const id = setInterval(() => setRevision((n) => n + 1), REFRESH_MS);
     return () => clearInterval(id);
   }, [running]);
+
+  // A monitoring tool should be monitoring when you open it. Stop is one click.
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || hosts.length === 0) return;
+    started.current = true;
+    for (const h of hosts) store.current.addHost(h.id);
+    startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS)
+      .then(() => setRunning(true))
+      .catch((e: unknown) => setError(String(e)));
+  }, [hosts]);
 
   const toggleRun = useCallback(async () => {
     setError(null);
@@ -78,6 +103,8 @@ export default function App() {
       } else {
         stats.current.clear();
         lastStatus.current.clear();
+        store.current.clear();
+        for (const h of hosts) store.current.addHost(h.id);
         await startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS);
         setRunning(true);
       }
@@ -89,7 +116,9 @@ export default function App() {
   const addHosts = useCallback((added: HostSpec[]) => {
     setHosts((prev) => {
       const seen = new Set(prev.map((h) => h.target.toLowerCase()));
-      return [...prev, ...added.filter((h) => !seen.has(h.target.toLowerCase()))];
+      const fresh = added.filter((h) => !seen.has(h.target.toLowerCase()));
+      for (const h of fresh) store.current.addHost(h.id);
+      return [...prev, ...fresh];
     });
   }, []);
 
@@ -97,6 +126,7 @@ export default function App() {
     setHosts((prev) => prev.filter((h) => h.id !== id));
     stats.current.delete(id);
     lastStatus.current.delete(id);
+    store.current.removeHost(id);
   }, []);
 
   function toggleTheme() {
@@ -106,26 +136,24 @@ export default function App() {
     setTheme(next);
   }
 
-  // Derived from refs, so this recomputes on every render by design — the
-  // render cadence is what throttles it, not memoisation.
+  // Derived from refs, so this recomputes every render by design — the render
+  // cadence throttles it, not memoisation.
   const all = [...stats.current.values()];
   const withAvg = all.filter((s) => s.avg !== null);
+  const sent = all.reduce((a, s) => a + s.sent, 0);
+  const lost = all.reduce((a, s) => a + s.lost, 0);
   const summary = {
     avg:
       withAvg.length === 0
         ? null
         : withAvg.reduce((a, s) => a + (s.avg ?? 0), 0) / withAvg.length,
-    lossPct: (() => {
-      const sent = all.reduce((a, s) => a + s.sent, 0);
-      const lost = all.reduce((a, s) => a + s.lost, 0);
-      return sent === 0 ? 0 : (lost / sent) * 100;
-    })(),
+    lossPct: sent === 0 ? 0 : (lost / sent) * 100,
     up: [...lastStatus.current.values()].filter((s) => s === 'success').length,
   };
 
   return (
     <div className="flex h-full flex-col bg-bg text-text">
-      <header className="flex items-center justify-between border-b border-border px-5 py-3">
+      <header className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3">
         <div className="flex items-baseline gap-3">
           <span className="text-[15px] font-semibold tracking-tight">Brett-Net</span>
           <span className="text-xs text-text-muted">
@@ -152,19 +180,34 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex items-center gap-8 border-b border-border px-5 py-2.5 text-xs">
+      <div className="flex shrink-0 items-center gap-8 border-b border-border px-5 py-2.5 text-xs">
         <Stat label="Avg" value={formatMs(summary.avg)} />
         <Stat label="Loss" value={`${summary.lossPct.toFixed(1)}%`} />
         <Stat label="Up" value={`${summary.up} / ${hosts.length}`} />
       </div>
 
       {error && (
-        <p className="mx-5 mt-3 rounded-md border border-danger/40 px-3 py-2 font-mono text-xs text-danger">
+        <p className="mx-5 mt-3 shrink-0 rounded-md border border-danger/40 px-3 py-2 font-mono text-xs text-danger">
           {error}
         </p>
       )}
 
-      <main className="flex-1 overflow-auto px-5 py-4">
+      <section className="min-h-0 flex-1 px-2 py-2">
+        {hosts.length > 0 ? (
+          <LatencyChart
+            store={store.current}
+            hosts={hosts}
+            theme={theme}
+            revision={revision}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-text-muted">
+            Add a host to start graphing.
+          </div>
+        )}
+      </section>
+
+      <section className="max-h-[38%] shrink-0 overflow-auto border-t border-border px-5 py-3">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-left text-text-muted">
@@ -178,13 +221,15 @@ export default function App() {
             </tr>
           </thead>
           <tbody>
-            {hosts.map((h) => {
+            {hosts.map((h, i) => {
               const s = stats.current.get(h.id);
               const status = lastStatus.current.get(h.id);
+              const style = seriesStyle(i, theme);
               return (
                 <tr key={h.id} className="border-t border-border">
                   <td className="py-2">
                     <span className="flex items-center gap-2">
+                      <Swatch style={style} />
                       <StatusDot status={status} />
                       {h.label}
                     </span>
@@ -213,14 +258,8 @@ export default function App() {
           </tbody>
         </table>
 
-        {hosts.length === 0 && (
-          <p className="py-8 text-center text-xs text-text-muted">
-            No hosts yet. Add some below to start monitoring.
-          </p>
-        )}
-
         <AddHosts onAdd={addHosts} />
-      </main>
+      </section>
     </div>
   );
 }
@@ -231,6 +270,23 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="text-text-muted">{label}</span>
       <span className="font-mono">{value}</span>
     </span>
+  );
+}
+
+/** Line-style key matching the chart: colour plus dash pattern. */
+function Swatch({ style }: { style: { stroke: string; dash?: number[] } }) {
+  return (
+    <svg width="14" height="8" aria-hidden className="shrink-0">
+      <line
+        x1="0"
+        y1="4"
+        x2="14"
+        y2="4"
+        stroke={style.stroke}
+        strokeWidth="2"
+        strokeDasharray={style.dash?.join(' ')}
+      />
+    </svg>
   );
 }
 
