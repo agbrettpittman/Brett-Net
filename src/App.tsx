@@ -32,7 +32,8 @@ const REFRESH_MS = 500;
 export default function App() {
   const [info, setInfo] = useState<HostInfo | null>(null);
   const [hosts, setHosts] = useState<HostSpec[]>(DEFAULT_HOSTS);
-  const [running, setRunning] = useState(false);
+  /** User intent. The Rust monitor is kept in sync with this and `hosts`. */
+  const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [theme, setTheme] = useState(
     () => document.documentElement.dataset.theme ?? 'light',
@@ -78,47 +79,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!running) return;
+    if (!enabled) return;
     const id = setInterval(() => setRevision((n) => n + 1), REFRESH_MS);
     return () => clearInterval(id);
-  }, [running]);
+  }, [enabled]);
 
-  // A monitoring tool should be monitoring when you open it. Stop is one click.
-  const started = useRef(false);
+  // Single owner of the Rust monitor. The scheduler spawns one task per host at
+  // start, so it has to be restarted whenever the host list changes — otherwise
+  // hosts added later are never probed, and removed ones are probed forever.
+  // Monitoring is on by default: a monitoring tool should be monitoring when you
+  // open it. Stop is one click.
   useEffect(() => {
-    if (started.current || hosts.length === 0) return;
-    started.current = true;
-    for (const h of hosts) store.current.addHost(h.id);
-    startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS)
-      .then(() => setRunning(true))
-      .catch((e: unknown) => setError(String(e)));
-  }, [hosts]);
-
-  const toggleRun = useCallback(async () => {
-    setError(null);
-    try {
-      if (running) {
-        await stopMonitor();
-        setRunning(false);
-      } else {
-        stats.current.clear();
-        lastStatus.current.clear();
-        store.current.clear();
-        for (const h of hosts) store.current.addHost(h.id);
-        await startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS);
-        setRunning(true);
-      }
-    } catch (e) {
-      setError(String(e));
+    if (!enabled || hosts.length === 0) {
+      stopMonitor().catch(() => {});
+      return;
     }
-  }, [running, hosts]);
+
+    let cancelled = false;
+    for (const h of hosts) store.current.addHost(h.id);
+    startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS).catch((e: unknown) => {
+      if (!cancelled) setError(String(e));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hosts, enabled]);
+
+  const toggleRun = useCallback(() => {
+    setError(null);
+    if (!enabled) {
+      // Resuming after a stop: drop history, otherwise the chart draws a
+      // straight line straight across however long the pause lasted.
+      stats.current.clear();
+      lastStatus.current.clear();
+      store.current.clear();
+    }
+    setEnabled(!enabled);
+  }, [enabled]);
 
   const addHosts = useCallback((added: HostSpec[]) => {
     setHosts((prev) => {
       const seen = new Set(prev.map((h) => h.target.toLowerCase()));
-      const fresh = added.filter((h) => !seen.has(h.target.toLowerCase()));
-      for (const h of fresh) store.current.addHost(h.id);
-      return [...prev, ...fresh];
+      return [...prev, ...added.filter((h) => !seen.has(h.target.toLowerCase()))];
     });
   }, []);
 
@@ -164,12 +167,12 @@ export default function App() {
           <button
             onClick={toggleRun}
             className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
-              running
+              enabled
                 ? 'bg-surface-2 text-text hover:bg-border'
                 : 'bg-accent text-white hover:opacity-90'
             }`}
           >
-            {running ? 'Stop' : 'Start'}
+            {enabled ? 'Stop' : 'Start'}
           </button>
           <button
             onClick={toggleTheme}
