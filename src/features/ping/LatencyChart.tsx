@@ -5,11 +5,16 @@ import type { HostSpec } from '../../lib/ipc';
 import type { SeriesStore } from '../../lib/series';
 import { chartTheme, seriesStyle } from '../../lib/palette';
 import { latencyRange } from '../../lib/chartScale';
+import { windowAndBucket } from '../../lib/aggregate';
 
 interface Props {
   store: SeriesStore;
   hosts: HostSpec[];
   theme: string;
+  /** Visible window in seconds; 0 shows everything retained. */
+  spanSec: number;
+  /** Averaging bucket in seconds; 0 plots every sample. */
+  bucketSec: number;
   /** Bumped by the parent to signal new samples; drives an imperative redraw. */
   revision: number;
 }
@@ -21,11 +26,24 @@ interface Props {
  * samples never pass through React state. The chart is only rebuilt when its
  * *shape* changes — the host list or the theme.
  */
-export function LatencyChart({ store, hosts, theme, revision }: Props) {
+export function LatencyChart({
+  store,
+  hosts,
+  theme,
+  spanSec,
+  bucketSec,
+  revision,
+}: Props) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<uPlot | null>(null);
 
-  const hostKey = hosts.map((h) => h.id).join('|');
+  // Rebuild when the series *shape* changes: identity, label, or colour.
+  const hostKey = hosts.map((h) => `${h.id}:${h.label}:${h.color ?? ''}`).join('|');
+
+  const data = () => {
+    const [xs, ...series] = store.aligned(hosts.map((h) => h.id));
+    return windowAndBucket(xs, series, spanSec, bucketSec) as uPlot.AlignedData;
+  };
 
   useEffect(() => {
     const el = container.current;
@@ -79,9 +97,13 @@ export function LatencyChart({ store, hosts, theme, revision }: Props) {
           const style = seriesStyle(i, theme);
           return {
             label: h.label,
-            stroke: style.stroke,
+            stroke: h.color ?? style.stroke,
             width: 1.5,
-            dash: style.dash,
+            dash: h.color ? undefined : style.dash,
+            // Cubic interpolation. Splines can overshoot slightly between
+            // points, so the curve may dip a hair below the true minimum —
+            // acceptable here, and far easier to read a trend from.
+            paths: uPlot.paths.spline?.(),
             // A timeout is a null: leave a visible break rather than drawing a
             // straight line across the outage as though nothing happened.
             spanGaps: false,
@@ -91,7 +113,7 @@ export function LatencyChart({ store, hosts, theme, revision }: Props) {
       ],
     };
 
-    const u = new uPlot(opts, store.aligned(hosts.map((h) => h.id)), el);
+    const u = new uPlot(opts, data(), el);
     chart.current = u;
 
     const ro = new ResizeObserver(() => {
@@ -109,9 +131,9 @@ export function LatencyChart({ store, hosts, theme, revision }: Props) {
   }, [hostKey, theme]);
 
   useEffect(() => {
-    chart.current?.setData(store.aligned(hosts.map((h) => h.id)));
+    chart.current?.setData(data());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision, hostKey]);
+  }, [revision, hostKey, spanSec, bucketSec]);
 
   return <div ref={container} className="h-full w-full" />;
 }

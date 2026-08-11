@@ -16,6 +16,8 @@ export interface HostSpec {
   label: string;
   /** Hostname or IPv4 literal. */
   target: string;
+  /** Optional colour override. UI-only; never sent to the backend. */
+  color?: string;
 }
 
 export interface PingResult {
@@ -51,7 +53,9 @@ export function startMonitor(
   intervalMs: number,
   timeoutMs: number,
 ): Promise<void> {
-  return invoke('start_monitor', { args: { hosts, intervalMs, timeoutMs } });
+  // Strip UI-only fields so the wire payload matches the Rust struct exactly.
+  const wire = hosts.map(({ id, label, target }) => ({ id, label, target }));
+  return invoke('start_monitor', { args: { hosts: wire, intervalMs, timeoutMs } });
 }
 
 export function stopMonitor(): Promise<void> {

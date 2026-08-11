@@ -14,7 +14,9 @@ import { HostStats, formatMs } from './lib/stats';
 import { SeriesStore } from './lib/series';
 import { seriesStyle } from './lib/palette';
 import { AddHosts } from './components/AddHosts';
+import { EditHost } from './components/EditHost';
 import { LatencyChart } from './features/ping/LatencyChart';
+import { BUCKETS, SPANS } from './lib/aggregate';
 
 const DEFAULT_HOSTS: HostSpec[] = [
   { id: 'h-google-dns', label: 'Google DNS', target: '8.8.8.8' },
@@ -22,9 +24,17 @@ const DEFAULT_HOSTS: HostSpec[] = [
   { id: 'h-google', label: 'google.com', target: 'google.com' },
 ];
 
-const INTERVAL_MS = 1000;
+/** Selectable probe rates. */
+const PROBE_RATES = [
+  { ms: 250, label: '250ms' },
+  { ms: 500, label: '500ms' },
+  { ms: 1000, label: '1s' },
+  { ms: 2000, label: '2s' },
+  { ms: 5000, label: '5s' },
+] as const;
+
 const TIMEOUT_MS = 2000;
-/** One hour of history at a one-second interval. */
+/** Samples retained per host — an hour at one per second. */
 const HISTORY = 3600;
 /** The chrome re-renders on a timer, not per tick, to keep React off the hot path. */
 const REFRESH_MS = 500;
@@ -35,6 +45,10 @@ export default function App() {
   /** User intent. The Rust monitor is kept in sync with this and `hosts`. */
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<HostSpec | null>(null);
+  const [probeMs, setProbeMs] = useState(1000);
+  const [bucketSec, setBucketSec] = useState(5);
+  const [spanSec, setSpanSec] = useState(300);
   const [theme, setTheme] = useState(
     () => document.documentElement.dataset.theme ?? 'light',
   );
@@ -97,14 +111,14 @@ export default function App() {
 
     let cancelled = false;
     for (const h of hosts) store.current.addHost(h.id);
-    startMonitor(hosts, INTERVAL_MS, TIMEOUT_MS).catch((e: unknown) => {
+    startMonitor(hosts, probeMs, TIMEOUT_MS).catch((e: unknown) => {
       if (!cancelled) setError(String(e));
     });
 
     return () => {
       cancelled = true;
     };
-  }, [hosts, enabled]);
+  }, [hosts, enabled, probeMs]);
 
   const toggleRun = useCallback(() => {
     setError(null);
@@ -123,6 +137,11 @@ export default function App() {
       const seen = new Set(prev.map((h) => h.target.toLowerCase()));
       return [...prev, ...added.filter((h) => !seen.has(h.target.toLowerCase()))];
     });
+  }, []);
+
+  const saveHost = useCallback((updated: HostSpec) => {
+    setHosts((prev) => prev.map((h) => (h.id === updated.id ? updated : h)));
+    setEditing(null);
   }, []);
 
   const removeHost = useCallback((id: string) => {
@@ -183,10 +202,34 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex shrink-0 items-center gap-8 border-b border-border px-5 py-2.5 text-xs">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-8 gap-y-2 border-b border-border px-5 py-2.5 text-xs">
         <Stat label="Avg" value={formatMs(summary.avg)} />
         <Stat label="Loss" value={`${summary.lossPct.toFixed(1)}%`} />
         <Stat label="Up" value={`${summary.up} / ${hosts.length}`} />
+
+        <span className="ml-auto flex items-center gap-4">
+          <Select
+            label="Every"
+            title="How often each host is probed"
+            value={probeMs}
+            onChange={setProbeMs}
+            options={PROBE_RATES.map((r) => ({ value: r.ms, label: r.label }))}
+          />
+          <Select
+            label="Average"
+            title="Average samples into buckets to reveal trends"
+            value={bucketSec}
+            onChange={setBucketSec}
+            options={BUCKETS.map((b) => ({ value: b.sec, label: b.label }))}
+          />
+          <Select
+            label="Span"
+            title="How much history the chart shows"
+            value={spanSec}
+            onChange={setSpanSec}
+            options={SPANS.map((s) => ({ value: s.sec, label: s.label }))}
+          />
+        </span>
       </div>
 
       {error && (
@@ -201,6 +244,8 @@ export default function App() {
             store={store.current}
             hosts={hosts}
             theme={theme}
+            spanSec={spanSec}
+            bucketSec={bucketSec}
             revision={revision}
           />
         ) : (
@@ -227,14 +272,21 @@ export default function App() {
             {hosts.map((h, i) => {
               const s = stats.current.get(h.id);
               const status = lastStatus.current.get(h.id);
-              const style = seriesStyle(i, theme);
+              const auto = seriesStyle(i, theme);
+              const style = h.color ? { stroke: h.color } : auto;
               return (
-                <tr key={h.id} className="border-t border-border">
+                <tr key={h.id} className="group border-t border-border">
                   <td className="py-2">
                     <span className="flex items-center gap-2">
                       <Swatch style={style} />
                       <StatusDot status={status} />
-                      {h.label}
+                      <button
+                        onClick={() => setEditing(h)}
+                        className="text-left transition-colors hover:text-accent"
+                        title="Edit name, target, or colour"
+                      >
+                        {h.label}
+                      </button>
                     </span>
                   </td>
                   <td className="py-2 font-mono text-text-muted" data-selectable>
@@ -263,7 +315,60 @@ export default function App() {
 
         <AddHosts onAdd={addHosts} />
       </section>
+
+      {editing && (
+        <EditHost
+          host={editing}
+          autoColor={
+            seriesStyle(
+              Math.max(
+                0,
+                hosts.findIndex((h) => h.id === editing.id),
+              ),
+              theme,
+            ).stroke
+          }
+          onSave={saveHost}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </div>
+  );
+}
+
+interface SelectOption {
+  value: number;
+  label: string;
+}
+
+function Select({
+  label,
+  title,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  title: string;
+  value: number;
+  onChange: (v: number) => void;
+  options: SelectOption[];
+}) {
+  return (
+    <label className="flex items-center gap-1.5" title={title}>
+      <span className="text-text-muted">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs outline-none focus:border-accent"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

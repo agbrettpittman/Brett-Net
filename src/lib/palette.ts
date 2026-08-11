@@ -37,6 +37,9 @@ export function seriesStyle(index: number, theme: string): SeriesStyle {
   return dash ? { stroke, dash } : { stroke };
 }
 
+/** The light-theme ramp, for offering colour choices in the host editor. */
+export const PALETTE_PREVIEW: string[] = LIGHT;
+
 /** Colours for chart chrome, matching the CSS token values per theme. */
 export function chartTheme(theme: string) {
   const dark = theme === 'dark';
