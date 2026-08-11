@@ -1,0 +1,14 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Updater signing keys must never be committed
+*.key
+*.key.pub
+.env
+.env.local
+
+.DS_Store
+Thumbs.db
+*.log
