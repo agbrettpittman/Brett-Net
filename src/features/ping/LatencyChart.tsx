@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { HostSpec } from '../../lib/ipc';
@@ -36,6 +36,15 @@ export function LatencyChart({
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<uPlot | null>(null);
+  // Read inside uPlot hooks and the redraw effect; mirrored into state purely so
+  // the reset affordance can render.
+  const zoomedRef = useRef(false);
+  const [zoomed, setZoomed] = useState(false);
+
+  const setZoom = (on: boolean) => {
+    zoomedRef.current = on;
+    setZoomed(on);
+  };
 
   // Rebuild when the series *shape* changes: identity, label, or colour.
   const hostKey = hosts.map((h) => `${h.id}:${h.label}:${h.color ?? ''}`).join('|');
@@ -91,6 +100,15 @@ export function LatencyChart({
         focus: { prox: 24 },
         points: { size: 6 },
       },
+      hooks: {
+        // A completed drag-selection means the user chose a range; from then on
+        // incoming data must not reset the scales out from under them.
+        setSelect: [
+          (u) => {
+            if (u.select.width > 0) setZoom(true);
+          },
+        ],
+      },
       series: [
         {},
         ...hosts.map((h, i) => {
@@ -121,7 +139,13 @@ export function LatencyChart({
     });
     ro.observe(el);
 
+    // uPlot resets the scales on double-click; clear our flag to match, so the
+    // chart resumes following live data.
+    const onDblClick = () => setZoom(false);
+    el.addEventListener('dblclick', onDblClick);
+
     return () => {
+      el.removeEventListener('dblclick', onDblClick);
       ro.disconnect();
       u.destroy();
       chart.current = null;
@@ -130,10 +154,37 @@ export function LatencyChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostKey, theme]);
 
+  // Changing the span or bucket changes the data domain entirely, so any zoom
+  // into the old domain is meaningless. Drop it.
   useEffect(() => {
-    chart.current?.setData(data());
+    setZoom(false);
+  }, [spanSec, bucketSec]);
+
+  useEffect(() => {
+    // resetScales: false keeps a user's zoom. When not zoomed it must stay true,
+    // or the view would freeze at the first window and never follow new data.
+    chart.current?.setData(data(), !zoomedRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision, hostKey, spanSec, bucketSec]);
 
-  return <div ref={container} className="h-full w-full" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={container} className="h-full w-full" />
+      {zoomed && (
+        <button
+          onClick={() => {
+            const u = chart.current;
+            setZoom(false);
+            // Snap back to the full domain immediately rather than waiting for
+            // the next tick.
+            u?.setData(data(), true);
+          }}
+          className="absolute right-3 top-2 rounded-md border border-border bg-surface/90 px-2 py-0.5 text-xs text-text-muted backdrop-blur transition-colors hover:text-text"
+          title="Double-clicking the chart does this too"
+        >
+          Reset zoom
+        </button>
+      )}
+    </div>
+  );
 }
