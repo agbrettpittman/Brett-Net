@@ -2,29 +2,31 @@
 export const MIN_SPAN_MS = 10;
 
 /**
- * Reserves a band below zero for down-lanes and returns the adjusted axis range
- * plus the spacing between lanes.
+ * Reserves a band beneath the plotted latency for down-lanes.
  *
- * The range is computed explicitly rather than derived from the plotted data:
- * the lane positions depend on the range and the range depends on the lanes, so
- * letting the chart library infer it from min/max is circular and ends up
- * clipping the lanes out of view.
+ * The band hangs below `divider` — the fitted latency floor — rather than below
+ * absolute zero. Anchoring at zero would drag the axis down to include it and
+ * squash the actual measurements into the top of the chart, which is the worst
+ * possible moment to lose vertical resolution. The divider is drawn as a
+ * baseline and labels below it are suppressed, so the meaning is the same:
+ * anything under the line is not responding.
  *
- * Lane `k` sits at `-gap * (k + 1)`, so lanes are always strictly below zero
- * regardless of how high the latency range goes.
+ * The range is computed explicitly rather than derived from the plotted data —
+ * lane positions depend on the range and the range depends on the lanes, so
+ * letting the chart library infer it from min/max is circular and clips them.
  */
 export function withLanes(
   range: [number, number],
   laneCount: number,
-): { range: [number, number]; gap: number } {
-  if (laneCount <= 0) return { range, gap: 0 };
-
+): { range: [number, number]; gap: number; divider: number } {
   const [lo, hi] = range;
+  if (laneCount <= 0) return { range, gap: 0, divider: lo };
+
   // Proportional to the visible latency band, so the spacing looks the same
   // whether the chart is showing 2ms or 400ms.
-  const gap = Math.max((hi - Math.max(lo, 0)) * 0.08, 1);
+  const gap = Math.max((hi - lo) * 0.08, 1);
   // The trailing 0.6 leaves breathing room under the deepest lane.
-  return { range: [-gap * (laneCount + 0.6), hi], gap };
+  return { range: [lo - gap * (laneCount + 0.6), hi], gap, divider: lo };
 }
 
 /**

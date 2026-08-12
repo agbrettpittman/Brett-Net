@@ -46,45 +46,44 @@ describe('withLanes', () => {
     expect(r.gap).toBe(0);
   });
 
-  it('extends the floor below zero once a lane exists', () => {
-    const { range, gap } = withLanes([0, 50], 1);
-    expect(gap).toBeGreaterThan(0);
-    expect(range[0]).toBeLessThan(0);
-    expect(range[1]).toBe(50);
+  it('hangs the band below the fitted floor, not below zero', () => {
+    // The whole point: a fitted floor of 22 must not drag the axis to 0 and
+    // squash the real measurements into the top of the chart.
+    const { range, divider } = withLanes([22, 36], 1);
+    expect(divider).toBe(22);
+    expect(range[0]).toBeLessThan(22);
+    expect(range[0]).toBeGreaterThan(0);
+    expect(range[1]).toBe(36);
   });
 
-  it('puts every lane strictly below zero and inside the range', () => {
+  it('puts every lane below the divider and inside the range', () => {
     const laneCount = 4;
-    const { range, gap } = withLanes([0, 50], laneCount);
+    const { range, gap, divider } = withLanes([22, 36], laneCount);
     for (let k = 0; k < laneCount; k++) {
-      const y = -gap * (k + 1);
-      expect(y).toBeLessThan(0);
+      const y = divider - gap * (k + 1);
+      expect(y).toBeLessThan(divider);
       expect(y).toBeGreaterThan(range[0]);
     }
   });
 
   it('stacks lanes without overlapping', () => {
-    const { gap } = withLanes([0, 50], 3);
-    const ys = [0, 1, 2].map((k) => -gap * (k + 1));
+    const { gap, divider } = withLanes([0, 50], 3);
+    const ys = [0, 1, 2].map((k) => divider - gap * (k + 1));
     expect(new Set(ys).size).toBe(3);
     expect(ys[0]).toBeGreaterThan(ys[1]!);
     expect(ys[1]).toBeGreaterThan(ys[2]!);
   });
 
   it('deepens the floor as lanes are added', () => {
-    const one = withLanes([0, 50], 1).range[0];
-    const three = withLanes([0, 50], 3).range[0];
-    expect(three).toBeLessThan(one);
+    expect(withLanes([0, 50], 3).range[0]).toBeLessThan(withLanes([0, 50], 1).range[0]);
   });
 
   it('scales spacing with the latency band', () => {
-    const small = withLanes([0, 10], 1).gap;
-    const large = withLanes([0, 400], 1).gap;
-    expect(large).toBeGreaterThan(small);
+    expect(withLanes([0, 400], 1).gap).toBeGreaterThan(withLanes([0, 10], 1).gap);
   });
 
   it('keeps a usable gap for a very narrow band', () => {
-    // Without a floor the lanes would collapse onto the zero line.
+    // Without a floor the lanes would collapse onto the divider.
     expect(withLanes([20, 21], 2).gap).toBeGreaterThanOrEqual(1);
   });
 

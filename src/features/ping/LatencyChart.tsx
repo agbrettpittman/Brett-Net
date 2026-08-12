@@ -6,6 +6,7 @@ import type { SeriesStore } from '../../lib/series';
 import { chartTheme, seriesStyle } from '../../lib/palette';
 import { latencyRange, withLanes } from '../../lib/chartScale';
 import { windowAndBucket } from '../../lib/aggregate';
+import { buildLaneSeries, laneRanks } from '../../lib/lanes';
 
 interface Props {
   store: SeriesStore;
@@ -46,6 +47,8 @@ export function LatencyChart({
   const laneStep = useRef(0);
   /** Axis range computed in build(); the y scale reads it verbatim. */
   const yRange = useRef<[number, number]>([0, 10]);
+  /** Y value of the down-lane divider, or null when nothing is failing. */
+  const laneDivider = useRef<number | null>(null);
 
   const setZoom = (on: boolean) => {
     zoomedRef.current = on;
@@ -60,12 +63,7 @@ export function LatencyChart({
     const starts = ids.map((id) => store.startIndex(id));
     const b = windowAndBucket(xs, series, starts, spanSec, bucketSec);
 
-    // Only hosts failing somewhere in view get a lane, and they stack in host
-    // order so two failing hosts never draw on top of each other.
-    const rank = new Map<number, number>();
-    b.down.forEach((d, i) => {
-      if (d.some(Boolean)) rank.set(i, rank.size);
-    });
+    const rank = laneRanks(b.down);
 
     // The axis is derived from the *latency* values only, then widened to fit
     // the lane band. Deriving it from the plotted data instead would be
@@ -80,18 +78,14 @@ export function LatencyChart({
       }
     }
     const base = Number.isFinite(lo) ? latencyRange(lo, hi) : latencyRange(null, null);
-    const { range, gap } = withLanes(base, rank.size);
+    const { range, gap, divider } = withLanes(base, rank.size);
     yRange.current = range;
     laneStep.current = gap;
+    laneDivider.current = gap > 0 ? divider : null;
 
-    const lanes = b.ys.map((s, i) => {
-      const r = rank.get(i);
-      if (r === undefined) return s.map(() => null);
-      const y = -gap * (r + 1);
-      return b.down[i]!.map((d) => (d ? y : null));
-    });
+    const { lanes, connectors } = buildLaneSeries(b.ys, b.down, rank, gap, divider);
 
-    return [b.xs, ...b.ys, ...lanes] as uPlot.AlignedData;
+    return [b.xs, ...b.ys, ...lanes, ...connectors] as uPlot.AlignedData;
   }
 
   useEffect(() => {
@@ -131,8 +125,12 @@ export function LatencyChart({
           grid: { stroke: colors.grid, width: 1 },
           ticks: { stroke: colors.grid, width: 1 },
           font: '11px system-ui, sans-serif',
-          // Below zero is the down-lane band, not a latency of -20ms.
-          values: (_u, splits) => splits.map((v) => (v < 0 ? '' : `${v} ms`)),
+          // Below the divider is the down-lane band, which is status rather
+          // than a measurement, so those ticks carry no label.
+          values: (_u, splits) =>
+            splits.map((v) =>
+              laneDivider.current !== null && v < laneDivider.current ? '' : `${v} ms`,
+            ),
         },
       ],
       cursor: { focus: { prox: 24 }, points: { size: 6 } },
@@ -142,13 +140,13 @@ export function LatencyChart({
             if (u.select.width > 0) setZoom(true);
           },
         ],
-        // Mark where zero is, so the lanes below it read as "off the scale"
-        // rather than as negative latency.
+        // Mark the divider, so the lanes below it read as "not responding"
+        // rather than as unusually low latency.
         draw: [
           (u) => {
-            if (laneStep.current <= 0) return;
+            if (laneDivider.current === null) return;
             const ctx = u.ctx;
-            const y = Math.round(u.valToPos(0, 'y', true)) + 0.5;
+            const y = Math.round(u.valToPos(laneDivider.current, 'y', true)) + 0.5;
             ctx.save();
             ctx.beginPath();
             // The lane series leave a dash pattern on the context; clear it or
@@ -187,6 +185,18 @@ export function LatencyChart({
             stroke: h.color ?? style.stroke,
             width: 2,
             dash: [4, 4],
+            spanGaps: false,
+            points: { show: false },
+          } satisfies uPlot.Series;
+        }),
+        // Transition connectors: solid, so the exact moment a host drops or
+        // recovers is a visible edge rather than a gap between two lines.
+        ...hosts.map((h, i) => {
+          const style = seriesStyle(i, theme);
+          return {
+            label: `${h.label} (transition)`,
+            stroke: h.color ?? style.stroke,
+            width: 1.5,
             spanGaps: false,
             points: { show: false },
           } satisfies uPlot.Series;
