@@ -13,6 +13,15 @@ export class SeriesStore {
   readonly capacity: number;
   private xs: number[] = [];
   private ys = new Map<string, Series>();
+  /**
+   * Column index at which each host began being probed.
+   *
+   * Nulls before this point are back-fill — the host did not exist yet — while
+   * nulls at or after it mean a probe that got no reply. Without this the two
+   * are indistinguishable, and a host added late would look like it had been
+   * down for the entire history.
+   */
+  private starts = new Map<string, number>();
 
   /** @param capacity maximum samples retained per series */
   constructor(capacity = 3600) {
@@ -34,10 +43,17 @@ export class SeriesStore {
   addHost(id: string): void {
     if (this.ys.has(id)) return;
     this.ys.set(id, new Array<number | null>(this.xs.length).fill(null));
+    this.starts.set(id, this.xs.length);
   }
 
   removeHost(id: string): void {
     this.ys.delete(id);
+    this.starts.delete(id);
+  }
+
+  /** First column at which this host was being probed. */
+  startIndex(id: string): number {
+    return this.starts.get(id) ?? 0;
   }
 
   /**
@@ -60,12 +76,15 @@ export class SeriesStore {
         const series = new Array<number | null>(this.xs.length - 1).fill(null);
         series.push(values.get(id) ?? null);
         this.ys.set(id, series);
+        this.starts.set(id, this.xs.length - 1);
       }
     }
 
     if (this.xs.length > this.capacity) {
       this.xs.shift();
       for (const series of this.ys.values()) series.shift();
+      // Every start index shifts down with the window.
+      for (const [id, at] of this.starts) this.starts.set(id, Math.max(0, at - 1));
     }
   }
 
@@ -89,5 +108,6 @@ export class SeriesStore {
   clear(): void {
     this.xs = [];
     this.ys.clear();
+    this.starts.clear();
   }
 }

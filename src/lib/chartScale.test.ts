@@ -26,9 +26,17 @@ describe('latencyRange', () => {
     expect(hi).toBeCloseTo(215, 5);
   });
 
-  it('never goes negative', () => {
+  it('never goes negative for ordinary latency data', () => {
     const [lo] = latencyRange(0.2, 0.9);
     expect(lo).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps room below zero when down-lanes are present', () => {
+    // A negative minimum means down-lanes are drawn below the axis; clamping
+    // the floor at zero would hide them entirely.
+    const [lo, hi] = latencyRange(-12, 40);
+    expect(lo).toBeLessThanOrEqual(-12);
+    expect(hi).toBeGreaterThan(40);
   });
 
   it('enforces a minimum span for a near-flat series', () => {

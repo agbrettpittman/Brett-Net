@@ -20,9 +20,24 @@ export const SPANS = [
   { sec: 0, label: 'All' },
 ] as const;
 
+export interface Bucketed {
+  xs: number[];
+  ys: Series[];
+  /**
+   * Per series, per bucket: the host was being probed but nothing replied.
+   *
+   * Distinct from a plain `null` in `ys`, which also covers "this host did not
+   * exist yet". Only this flag means *failing*.
+   */
+  down: boolean[][];
+}
+
 /**
  * Trims to the most recent `spanSec` and averages samples into `bucketSec`
  * buckets.
+ *
+ * `starts[i]` is the column index at which series `i` began being probed;
+ * anything before it is back-fill and is never reported as down.
  *
  * Buckets are aligned to absolute multiples of `bucketSec` rather than to the
  * newest sample, so a bucket covers a fixed wall-clock window and points do not
@@ -35,10 +50,13 @@ export const SPANS = [
 export function windowAndBucket(
   xs: number[],
   series: Series[],
+  starts: number[],
   spanSec: number,
   bucketSec: number,
-): [number[], ...Series[]] {
-  if (xs.length === 0) return [[], ...series.map(() => [] as Series)];
+): Bucketed {
+  if (xs.length === 0) {
+    return { xs: [], ys: series.map(() => []), down: series.map(() => []) };
+  }
 
   let start = 0;
   if (spanSec > 0) {
@@ -50,8 +68,16 @@ export function windowAndBucket(
 
   const wx = xs.slice(start);
   const ws = series.map((s) => s.slice(start));
+  // Re-base each start against the trimmed window.
+  const wStarts = starts.map((s) => Math.max(0, s - start));
 
-  if (bucketSec <= 0) return [wx, ...ws];
+  if (bucketSec <= 0) {
+    return {
+      xs: wx,
+      ys: ws,
+      down: ws.map((s, si) => s.map((v, i) => v == null && i >= wStarts[si]!)),
+    };
+  }
 
   const bucketStarts: number[] = [];
   const indexOfBucket = new Map<number, number>();
@@ -66,24 +92,34 @@ export function windowAndBucket(
   // Plot each average at the centre of the window it summarises.
   const outX = bucketStarts.map((b) => b + bucketSec / 2);
 
-  const outSeries: Series[] = ws.map((s) => {
+  const outSeries: Series[] = [];
+  const outDown: boolean[][] = [];
+
+  ws.forEach((s, si) => {
     const sums = new Float64Array(bucketStarts.length);
     const counts = new Uint32Array(bucketStarts.length);
+    const probed = new Uint32Array(bucketStarts.length);
+    const from = wStarts[si]!;
 
     for (let i = 0; i < wx.length; i++) {
+      const bi = indexOfBucket.get(Math.floor(wx[i]! / bucketSec) * bucketSec)!;
+      if (i >= from) probed[bi]! += 1;
       const v = s[i];
       if (v == null) continue;
-      const bi = indexOfBucket.get(Math.floor(wx[i]! / bucketSec) * bucketSec)!;
       sums[bi]! += v;
       counts[bi]! += 1;
     }
 
-    const out: Series = new Array(bucketStarts.length);
+    const ys: Series = new Array(bucketStarts.length);
+    const down: boolean[] = new Array(bucketStarts.length);
     for (let i = 0; i < bucketStarts.length; i++) {
-      out[i] = counts[i]! === 0 ? null : sums[i]! / counts[i]!;
+      ys[i] = counts[i]! === 0 ? null : sums[i]! / counts[i]!;
+      // Probed at least once in this bucket, yet nothing came back.
+      down[i] = counts[i]! === 0 && probed[i]! > 0;
     }
-    return out;
+    outSeries.push(ys);
+    outDown.push(down);
   });
 
-  return [outX, ...outSeries];
+  return { xs: outX, ys: outSeries, down: outDown };
 }
