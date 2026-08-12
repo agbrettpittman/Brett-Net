@@ -4,7 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import type { HostSpec } from '../../lib/ipc';
 import type { SeriesStore } from '../../lib/series';
 import { chartTheme, seriesStyle } from '../../lib/palette';
-import { latencyRange } from '../../lib/chartScale';
+import { latencyRange, withLanes } from '../../lib/chartScale';
 import { windowAndBucket } from '../../lib/aggregate';
 
 interface Props {
@@ -44,6 +44,8 @@ export function LatencyChart({
   const [zoomed, setZoomed] = useState(false);
   /** Non-zero while any host is showing a down lane; drives the zero baseline. */
   const laneStep = useRef(0);
+  /** Axis range computed in build(); the y scale reads it verbatim. */
+  const yRange = useRef<[number, number]>([0, 10]);
 
   const setZoom = (on: boolean) => {
     zoomedRef.current = on;
@@ -65,8 +67,9 @@ export function LatencyChart({
       if (d.some(Boolean)) rank.set(i, rank.size);
     });
 
-    // Size the lanes against the latency spread so they stay proportional
-    // whether the chart is showing 2ms or 400ms.
+    // The axis is derived from the *latency* values only, then widened to fit
+    // the lane band. Deriving it from the plotted data instead would be
+    // circular — lane positions depend on the range — and clips the lanes.
     let lo = Infinity;
     let hi = -Infinity;
     for (const s of b.ys) {
@@ -76,14 +79,15 @@ export function LatencyChart({
         if (v > hi) hi = v;
       }
     }
-    const spread = Number.isFinite(lo) && Number.isFinite(hi) ? Math.max(hi - lo, 5) : 10;
-    const step = Math.max(spread * 0.14, 1);
-    laneStep.current = rank.size > 0 ? step : 0;
+    const base = Number.isFinite(lo) ? latencyRange(lo, hi) : latencyRange(null, null);
+    const { range, gap } = withLanes(base, rank.size);
+    yRange.current = range;
+    laneStep.current = gap;
 
     const lanes = b.ys.map((s, i) => {
       const r = rank.get(i);
       if (r === undefined) return s.map(() => null);
-      const y = -step * (r + 1);
+      const y = -gap * (r + 1);
       return b.down[i]!.map((d) => (d ? y : null));
     });
 
@@ -103,7 +107,8 @@ export function LatencyChart({
       padding: [12, 12, 0, 0],
       scales: {
         x: { time: true },
-        y: { range: (_u, min, max) => latencyRange(min, max) },
+        // Verbatim from build(); see the note there about circularity.
+        y: { range: () => yRange.current },
       },
       axes: [
         {
