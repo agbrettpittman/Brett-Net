@@ -88,9 +88,16 @@ async fn start_monitor(
 ///
 /// The payload is stored opaquely: the frontend owns the schema, so adding a
 /// field there needs no matching change here.
+/// Overrides where settings live. Set this when running the app for testing so
+/// a throwaway run cannot touch the real configuration.
+const DATA_DIR_ENV: &str = "BRETT_NET_DATA_DIR";
+
 fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = match std::env::var_os(DATA_DIR_ENV) {
+        Some(v) => std::path::PathBuf::from(v),
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("settings.json"))
 }

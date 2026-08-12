@@ -101,6 +101,19 @@ The installer uses NSIS `currentUser` mode, so it installs to `%LOCALAPPDATA%`
 with no UAC prompt — that's what makes it safe to hand to coworkers who don't
 have local admin.
 
+## Running a throwaway instance
+
+Settings normally live in `%APPDATA%\net.brett.brettnet\settings.json`. Set
+`BRETT_NET_DATA_DIR` to point somewhere else, so an experimental run cannot
+touch your real host list:
+
+```powershell
+$env:BRETT_NET_DATA_DIR = "$env:TEMP\brett-net-scratch"
+npm run tauri dev
+```
+
+Unset it (`Remove-Item Env:\BRETT_NET_DATA_DIR`) to go back to the real one.
+
 ## Troubleshooting
 
 **`link.exe not found`** — the Build Tools C++ workload didn't install. Re-run
