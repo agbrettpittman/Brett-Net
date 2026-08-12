@@ -15,8 +15,17 @@ import {
 import { HostStats, formatMs } from './lib/stats';
 import { SeriesStore } from './lib/series';
 import { seriesStyle } from './lib/palette';
+import {
+  applyTheme,
+  readPref,
+  resolveTheme,
+  systemPrefersDark,
+  THEME_KEY,
+  type ThemePref,
+} from './lib/theme';
 import { AddHosts } from './components/AddHosts';
 import { EditHost } from './components/EditHost';
+import { ThemeToggle } from './components/ThemeToggle';
 import { LatencyChart } from './features/ping/LatencyChart';
 import { BUCKETS, SPANS } from './lib/aggregate';
 
@@ -53,9 +62,9 @@ export default function App() {
   const [probeMs, setProbeMs] = useState(1000);
   const [bucketSec, setBucketSec] = useState(5);
   const [spanSec, setSpanSec] = useState(300);
-  const [theme, setTheme] = useState(
-    () => document.documentElement.dataset.theme ?? 'light',
-  );
+  const [themePref, setThemePref] = useState<ThemePref>(() => readPref(localStorage));
+  const [systemDark, setSystemDark] = useState(systemPrefersDark);
+  const theme = resolveTheme(themePref, systemDark);
 
   // High-frequency data lives outside React state.
   const stats = useRef(new Map<string, HostStats>());
@@ -182,12 +191,22 @@ export default function App() {
     store.current.removeHost(id);
   }, []);
 
-  function toggleTheme() {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('theme', next);
-    setTheme(next);
-  }
+  // Track the OS setting so "system" updates live rather than only on restart.
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
+
+  const changeTheme = useCallback((pref: ThemePref) => {
+    localStorage.setItem(THEME_KEY, pref);
+    setThemePref(pref);
+  }, []);
 
   // Derived from refs, so this recomputes every render by design — the render
   // cadence throttles it, not memoisation.
@@ -224,12 +243,7 @@ export default function App() {
           >
             {enabled ? 'Stop' : 'Start'}
           </button>
-          <button
-            onClick={toggleTheme}
-            className="rounded-md border border-border px-2.5 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
-          >
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
+          <ThemeToggle value={themePref} onChange={changeTheme} />
         </div>
       </header>
 
