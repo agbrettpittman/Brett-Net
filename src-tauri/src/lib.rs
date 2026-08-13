@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,6 +8,7 @@ use tauri::{Emitter, Manager};
 pub mod db;
 pub mod icmp;
 pub mod monitor;
+pub mod trace;
 
 use db::History;
 use monitor::dns::{DnsCache, SystemResolver};
@@ -26,6 +28,8 @@ struct AppState {
     history: Option<Arc<History>>,
     /// Why history is unavailable, if it is.
     history_error: Option<String>,
+    /// Cancel flag for the trace in flight, if any. Only one runs at a time.
+    trace_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 #[derive(Serialize)]
@@ -295,6 +299,73 @@ async fn export_history(
     .await
 }
 
+/// Streamed to the frontend as a trace progresses.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum TraceEvent {
+    /// The target was resolved; sent before any probe.
+    Resolved {
+        target: String,
+        addr: String,
+    },
+    Hop(trace::Hop),
+    Done {
+        outcome: trace::Outcome,
+    },
+}
+
+/// Walks the path to a target, streaming each hop as it is found.
+///
+/// Results arrive over a channel rather than as a return value: a trace across
+/// a filtered path takes minutes, and a view that shows nothing until it
+/// finishes looks broken.
+#[tauri::command]
+async fn run_trace(
+    state: tauri::State<'_, AppState>,
+    target: String,
+    config: trace::TraceConfig,
+    on_event: tauri::ipc::Channel<TraceEvent>,
+) -> Result<(), String> {
+    // Replace any trace already running rather than interleaving two.
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = state
+        .trace_cancel
+        .lock()
+        .unwrap()
+        .replace(Arc::clone(&flag))
+    {
+        previous.store(true, Ordering::Relaxed);
+    }
+
+    blocking(move || {
+        let dns = DnsCache::new(Arc::new(SystemResolver), DNS_TTL);
+        let addr = dns
+            .resolve(&target)
+            .ok_or_else(|| format!("could not resolve {target}"))?;
+
+        let _ = on_event.send(TraceEvent::Resolved {
+            target,
+            addr: addr.to_string(),
+        });
+
+        let backend = platform_backend();
+        let outcome = trace::run(&backend, addr, &config, &flag, |hop| {
+            let _ = on_event.send(TraceEvent::Hop(hop.clone()));
+        });
+
+        let _ = on_event.send(TraceEvent::Done { outcome });
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+fn stop_trace(state: tauri::State<'_, AppState>) {
+    if let Some(flag) = state.trace_cancel.lock().unwrap().take() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(windows)]
 fn platform_backend() -> icmp::windows::WindowsIcmp {
     icmp::windows::WindowsIcmp
@@ -328,6 +399,7 @@ pub fn run() {
                 monitor: Mutex::new(None),
                 history,
                 history_error,
+                trace_cancel: Mutex::new(None),
             });
             Ok(())
         })
@@ -339,7 +411,9 @@ pub fn run() {
             save_settings,
             history_since,
             history_stats,
-            export_history
+            export_history,
+            run_trace,
+            stop_trace
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

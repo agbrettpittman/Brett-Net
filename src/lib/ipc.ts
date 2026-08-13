@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 /** Mirrors `icmp::PingStatus`. */
@@ -134,6 +134,59 @@ export function saveSettings(value: Settings): Promise<void> {
 
 export function onPingTick(handler: (tick: PingTick) => void): Promise<UnlistenFn> {
   return listen<PingTick>(PING_TICK_EVENT, (event) => handler(event.payload));
+}
+
+/** Mirrors `trace::Hop`. */
+export interface TraceHop {
+  /** Time-to-live used for this hop, i.e. its position in the path. */
+  ttl: number;
+  /** Whatever replied — a router in between, or the target on the last hop. */
+  addr: string | null;
+  /** One entry per probe, in order; null where that probe timed out. */
+  rttsUs: (number | null)[];
+  status: PingStatus;
+  /** This hop is the target, so the path is complete. */
+  reached: boolean;
+}
+
+/** Mirrors `trace::Outcome`. Every one of these is a normal ending. */
+export type TraceOutcome = 'reached' | 'maxHops' | 'filtered' | 'cancelled';
+
+export type TraceEvent =
+  | { kind: 'resolved'; target: string; addr: string }
+  | ({ kind: 'hop' } & TraceHop)
+  | { kind: 'done'; outcome: TraceOutcome };
+
+export interface TraceConfig {
+  maxHops: number;
+  probes: number;
+  timeoutMs: number;
+}
+
+export const TRACE_DEFAULTS: TraceConfig = {
+  maxHops: 30,
+  probes: 3,
+  timeoutMs: 1500,
+};
+
+/**
+ * Walks the path to `target`, calling `onEvent` as each hop is discovered.
+ *
+ * Resolves once the trace has finished. Only one trace runs at a time — a
+ * second call cancels the first.
+ */
+export function runTrace(
+  target: string,
+  config: TraceConfig,
+  onEvent: (event: TraceEvent) => void,
+): Promise<void> {
+  const channel = new Channel<TraceEvent>();
+  channel.onmessage = onEvent;
+  return invoke('run_trace', { target, config, onEvent: channel });
+}
+
+export function stopTrace(): Promise<void> {
+  return invoke('stop_trace');
 }
 
 /** Human-readable label for a status, used in the UI and tooltips. */

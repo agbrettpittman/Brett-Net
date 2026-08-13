@@ -208,7 +208,13 @@ export function LatencyChart({
     chart.current = u;
 
     const ro = new ResizeObserver(() => {
-      u.setSize({ width: el.clientWidth, height: el.clientHeight });
+      const width = el.clientWidth;
+      const height = el.clientHeight;
+      // Switching to another tab hides this one with `display: none`, which
+      // reports 0x0. Resizing the canvas to nothing and back loses the drawing;
+      // ignoring it keeps the last good size until the tab is shown again.
+      if (width === 0 || height === 0) return;
+      u.setSize({ width, height });
     });
     ro.observe(el);
 
