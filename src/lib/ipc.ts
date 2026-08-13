@@ -214,6 +214,48 @@ export function stopTrace(): Promise<void> {
   return invoke('stop_trace');
 }
 
+/** Mirrors `probe::DnsResult`. */
+export interface DnsResult {
+  host: string;
+  /** Every address the resolver returned, in the order a client would try. */
+  addresses: string[];
+  ms: number;
+}
+
+/** Mirrors `probe::PortState`. */
+export type PortState = 'open' | 'refused' | 'filtered';
+
+export interface PortResult {
+  port: number;
+  state: PortState;
+  /** Null for a timeout, which measures the timeout rather than the network. */
+  ms: number | null;
+}
+
+export type ScanEvent =
+  | { kind: 'resolved'; target: string; addr: string }
+  | ({ kind: 'port' } & PortResult)
+  | { kind: 'done'; checked: number };
+
+/** Ports offered as a starting point, matching `probe::COMMON_PORTS`. */
+export const COMMON_PORTS = '21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3389, 8080';
+
+export function dnsLookup(host: string): Promise<DnsResult> {
+  return invoke<DnsResult>('dns_lookup', { host });
+}
+
+/** Checks TCP ports, calling `onEvent` as each one finishes. */
+export function scanPorts(
+  host: string,
+  ports: number[],
+  timeoutMs: number,
+  onEvent: (event: ScanEvent) => void,
+): Promise<void> {
+  const channel = new Channel<ScanEvent>();
+  channel.onmessage = onEvent;
+  return invoke('scan_ports', { host, config: { ports, timeoutMs }, onEvent: channel });
+}
+
 /** Human-readable label for a status, used in the UI and tooltips. */
 export const STATUS_LABEL: Record<PingStatus, string> = {
   success: 'OK',

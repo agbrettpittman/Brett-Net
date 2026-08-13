@@ -9,6 +9,7 @@ pub mod asn;
 pub mod db;
 pub mod icmp;
 pub mod monitor;
+pub mod probe;
 pub mod trace;
 
 use asn::AsnCache;
@@ -370,6 +371,78 @@ fn stop_trace(state: tauri::State<'_, AppState>) {
     }
 }
 
+#[tauri::command]
+async fn dns_lookup(host: String) -> Result<probe::DnsResult, String> {
+    blocking(move || probe::resolve(&host)).await
+}
+
+/// Streamed as a port scan progresses.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ScanEvent {
+    /// The target resolved; sent before any connection is attempted.
+    Resolved {
+        target: String,
+        addr: String,
+    },
+    Port(probe::PortResult),
+    Done {
+        checked: usize,
+    },
+}
+
+/// Checks TCP ports on a host, reporting each as it finishes.
+///
+/// Shares the trace cancel flag: both are "the one long-running probe", and
+/// only one of them is ever useful at a time.
+#[tauri::command]
+async fn scan_ports(
+    state: tauri::State<'_, AppState>,
+    host: String,
+    config: probe::PortScanConfig,
+    on_event: tauri::ipc::Channel<ScanEvent>,
+) -> Result<(), String> {
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = state
+        .trace_cancel
+        .lock()
+        .unwrap()
+        .replace(Arc::clone(&flag))
+    {
+        previous.store(true, Ordering::Relaxed);
+    }
+
+    blocking(move || {
+        let resolved = probe::resolve(&host)?;
+        let addr: std::net::IpAddr = resolved
+            .addresses
+            .first()
+            .ok_or_else(|| format!("could not resolve {host}"))?
+            .parse()
+            .map_err(|e| format!("{host}: {e}"))?;
+
+        let _ = on_event.send(ScanEvent::Resolved {
+            target: host,
+            addr: addr.to_string(),
+        });
+
+        let ports = probe::sanitise_ports(&config.ports);
+        let timeout = Duration::from_millis(config.timeout_ms.clamp(100, 10_000));
+        let checked = std::sync::atomic::AtomicUsize::new(0);
+
+        probe::scan(addr, &ports, timeout, &flag, |result| {
+            checked.fetch_add(1, Ordering::Relaxed);
+            let _ = on_event.send(ScanEvent::Port(result));
+        });
+
+        let _ = on_event.send(ScanEvent::Done {
+            checked: checked.load(Ordering::Relaxed),
+        });
+        Ok(())
+    })
+    .await
+}
+
 /// Names the networks behind a set of hop addresses.
 ///
 /// Private, loopback and carrier-grade-NAT addresses are dropped before
@@ -435,7 +508,9 @@ pub fn run() {
             export_history,
             run_trace,
             stop_trace,
-            lookup_asn
+            lookup_asn,
+            dns_lookup,
+            scan_ports
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

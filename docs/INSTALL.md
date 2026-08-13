@@ -102,6 +102,34 @@ the column is simply empty.
 
 ---
 
+## DNS and ports
+
+**Look up** resolves a name and lists every address it points at, in the order a
+client would try them. The first is flagged, because that is the one that will
+actually be used.
+
+**Check ports** tries a TCP connection to each port you list. Ranges work:
+`80, 443, 8000-8010`.
+
+| Result | What it means |
+|---|---|
+| **Open** | Something is listening. |
+| **Refused** | Nothing is listening — **but the host answered**, so it is up. |
+| **No answer** | Nothing came back. A firewall is dropping it, or the host is down. |
+
+The Refused/No answer distinction is the useful part: a refusal proves the
+machine is alive even though that particular service is not.
+
+**A refusal is not always fast.** It can take a couple of seconds to arrive, so
+if everything reads *No answer* on a host you expect to be up, raise **Wait**
+and try again — a short wait cannot see an answer that has not arrived yet.
+
+This is also the way to monitor something that blocks ping entirely: if a host
+answers on a TCP port but never replies to ping, the network is filtering ICMP
+rather than the host being down.
+
+---
+
 ## Where your data lives
 
 Both locations survive upgrades — installing a newer version keeps your hosts

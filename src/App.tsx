@@ -12,10 +12,12 @@ import { ThemeToggle } from './components/ThemeToggle';
 import { UpdateBanner } from './components/UpdateBanner';
 import { PingView } from './features/ping/PingView';
 import { PathView } from './features/path/PathView';
+import { DnsView } from './features/dns/DnsView';
 
 const TABS = [
   { id: 'ping', label: 'Ping' },
   { id: 'path', label: 'Path' },
+  { id: 'dns', label: 'DNS & Ports' },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -92,6 +94,9 @@ export default function App() {
         </div>
         <div className={tab === 'path' ? 'h-full' : 'hidden'}>
           <PathView />
+        </div>
+        <div className={tab === 'dns' ? 'h-full' : 'hidden'}>
+          <DnsView />
         </div>
       </main>
     </div>
