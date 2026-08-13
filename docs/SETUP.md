@@ -103,8 +103,9 @@ have local admin.
 
 ## Running a throwaway instance
 
-Settings normally live in `%APPDATA%\net.brett.brettnet\settings.json`. Set
-`BRETT_NET_DATA_DIR` to point somewhere else, so an experimental run cannot
+Settings normally live in `%APPDATA%\net.brett.brettnet\settings.json` and ping
+history in `%LOCALAPPDATA%\net.brett.brettnet\history.db`. Set
+`BRETT_NET_DATA_DIR` to point both somewhere else, so an experimental run cannot
 touch your real host list:
 
 ```powershell
