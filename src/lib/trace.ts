@@ -1,4 +1,4 @@
-import type { PingStatus, TraceHop, TraceOutcome } from './ipc';
+import type { AsnInfo, PingStatus, TraceHop, TraceOutcome } from './ipc';
 
 /**
  * Fastest probe to a hop, in milliseconds, or null if none answered.
@@ -54,8 +54,9 @@ export function outcomeMessage(outcome: TraceOutcome, hops: TraceHop[]): string 
       return `Stopped after ${n} hops without reaching the target.`;
     case 'filtered':
       // The single most common result on a corporate network, and the one most
-      // likely to be mistaken for a broken app.
-      return 'Stopped early — several hops in a row did not respond. The path is probably filtered rather than broken.';
+      // likely to be mistaken for a broken app. It also names the setting, so
+      // it is obvious the cutoff is a choice rather than a limitation.
+      return 'Stopped early — several hops in a row did not respond. The path is probably filtered rather than broken. Raise "Give up after" to keep going.';
     case 'cancelled':
       return 'Stopped.';
   }
@@ -64,4 +65,29 @@ export function outcomeMessage(outcome: TraceOutcome, hops: TraceHop[]): string 
 /** True once the trace has anything worth showing a table for. */
 export function hasResults(hops: TraceHop[]): boolean {
   return hops.length > 0;
+}
+
+/**
+ * How an AS number is conventionally written.
+ *
+ * The `AS` prefix matters: a bare number in a column of milliseconds is
+ * ambiguous, and `AS13335` is what you would paste into a lookup.
+ */
+export function formatAsn(asn: number | null): string {
+  return asn === null ? '' : `AS${asn}`;
+}
+
+/**
+ * Operator name with a redundant AS-number prefix removed.
+ *
+ * Some networks have no registered handle, so the name comes back as
+ * `AS6453 - TATA COMMUNICATIONS (AMERICA) INC` — printed next to its own ASN
+ * column that reads `AS6453`, which just wastes the width.
+ */
+export function networkName(info: AsnInfo): string {
+  const name = info.name ?? '';
+  if (info.asn === null) return name;
+
+  const prefix = `AS${info.asn} - `;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }

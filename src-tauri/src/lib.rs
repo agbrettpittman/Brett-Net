@@ -5,11 +5,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
+pub mod asn;
 pub mod db;
 pub mod icmp;
 pub mod monitor;
 pub mod trace;
 
+use asn::AsnCache;
 use db::History;
 use monitor::dns::{DnsCache, SystemResolver};
 use monitor::{HostSpec, MonitorConfig, MonitorHandle};
@@ -30,6 +32,8 @@ struct AppState {
     history_error: Option<String>,
     /// Cancel flag for the trace in flight, if any. Only one runs at a time.
     trace_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// Network names for hop addresses, kept for the life of the process.
+    asn: Arc<AsnCache>,
 }
 
 #[derive(Serialize)]
@@ -366,6 +370,22 @@ fn stop_trace(state: tauri::State<'_, AppState>) {
     }
 }
 
+/// Names the networks behind a set of hop addresses.
+///
+/// Private, loopback and carrier-grade-NAT addresses are dropped before
+/// anything leaves the machine, and a failed lookup returns nothing rather than
+/// an error — a trace without network names is still a useful trace.
+#[tauri::command]
+async fn lookup_asn(
+    state: tauri::State<'_, AppState>,
+    ips: Vec<String>,
+) -> Result<Vec<asn::AsnInfo>, String> {
+    let cache = Arc::clone(&state.asn);
+    let parsed: Vec<std::net::Ipv4Addr> = ips.iter().filter_map(|s| s.parse().ok()).collect();
+
+    blocking(move || Ok(cache.resolve(&parsed))).await
+}
+
 #[cfg(windows)]
 fn platform_backend() -> icmp::windows::WindowsIcmp {
     icmp::windows::WindowsIcmp
@@ -400,6 +420,7 @@ pub fn run() {
                 history,
                 history_error,
                 trace_cancel: Mutex::new(None),
+                asn: Arc::new(AsnCache::default()),
             });
             Ok(())
         })
@@ -413,7 +434,8 @@ pub fn run() {
             history_stats,
             export_history,
             run_trace,
-            stop_trace
+            stop_trace,
+            lookup_asn
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

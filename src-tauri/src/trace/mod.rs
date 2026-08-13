@@ -21,14 +21,15 @@ pub const DEFAULT_MAX_HOPS: u8 = 30;
 pub const DEFAULT_PROBES: u8 = 3;
 pub const DEFAULT_TIMEOUT_MS: u64 = 1500;
 
-/// Consecutive hops with no reply at all before the path is called filtered.
+/// Default consecutive silent hops before the path is called filtered.
 ///
 /// `tracert` walks all 30 regardless, which behind a corporate firewall that
 /// drops TTL-expired ICMP means two minutes of nothing after the first hop. Five
-/// is the compromise: long enough to cross the handful of deliberately silent
-/// routers that appear in real paths, short enough that a fully blocked trace
-/// gives up while the user is still watching.
-pub const SILENT_HOP_LIMIT: u8 = 5;
+/// is a reasonable default: long enough to cross the handful of deliberately
+/// silent routers that appear in real paths, short enough that a fully blocked
+/// trace gives up while the user is still watching. Configurable, because the
+/// right number depends on the network — see [`TraceConfig::silent_limit`].
+pub const DEFAULT_SILENT_LIMIT: u8 = 5;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +72,9 @@ pub struct TraceConfig {
     pub max_hops: u8,
     pub probes: u8,
     pub timeout_ms: u64,
+    /// Consecutive silent hops before giving up. **Zero disables the cutoff**,
+    /// walking the full `max_hops` the way `tracert` does.
+    pub silent_limit: u8,
 }
 
 impl Default for TraceConfig {
@@ -79,18 +83,29 @@ impl Default for TraceConfig {
             max_hops: DEFAULT_MAX_HOPS,
             probes: DEFAULT_PROBES,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            silent_limit: DEFAULT_SILENT_LIMIT,
         }
     }
 }
 
+struct Limits {
+    max_hops: u8,
+    probes: u8,
+    timeout: Duration,
+    /// `None` when the cutoff is switched off.
+    silent_limit: Option<u8>,
+}
+
 impl TraceConfig {
     /// Clamps whatever came in from the frontend to something sane.
-    fn sanitised(&self) -> (u8, u8, Duration) {
-        (
-            self.max_hops.clamp(1, 64),
-            self.probes.clamp(1, 10),
-            Duration::from_millis(self.timeout_ms.clamp(100, 10_000)),
-        )
+    fn sanitised(&self) -> Limits {
+        Limits {
+            max_hops: self.max_hops.clamp(1, 64),
+            probes: self.probes.clamp(1, 10),
+            timeout: Duration::from_millis(self.timeout_ms.clamp(100, 10_000)),
+            // Zero means "never give up"; anything else is a real limit.
+            silent_limit: (self.silent_limit > 0).then_some(self.silent_limit),
+        }
     }
 }
 
@@ -108,22 +123,22 @@ pub fn run<F>(
 where
     F: FnMut(&Hop),
 {
-    let (max_hops, probes, timeout) = cfg.sanitised();
+    let limits = cfg.sanitised();
     let mut silent = 0u8;
 
-    for ttl in 1..=max_hops {
-        let mut rtts_us = Vec::with_capacity(probes as usize);
+    for ttl in 1..=limits.max_hops {
+        let mut rtts_us = Vec::with_capacity(limits.probes as usize);
         let mut addr: Option<String> = None;
         // Nothing answering is a timeout; the first real answer replaces it.
         let mut status = PingStatus::TimedOut;
         let mut reached = false;
 
-        for _ in 0..probes {
+        for _ in 0..limits.probes {
             if cancelled.load(Ordering::Relaxed) {
                 return Outcome::Cancelled;
             }
 
-            let out = backend.echo(target, ttl, timeout);
+            let out = backend.echo(target, ttl, limits.timeout);
             rtts_us.push(out.rtt_us);
 
             if addr.is_none() {
@@ -148,7 +163,7 @@ where
         };
 
         silent = if hop.is_silent() { silent + 1 } else { 0 };
-        let quit_early = silent >= SILENT_HOP_LIMIT;
+        let quit_early = limits.silent_limit.is_some_and(|limit| silent >= limit);
 
         on_hop(&hop);
 
@@ -224,6 +239,7 @@ mod tests {
             max_hops: 30,
             probes,
             timeout_ms: 100,
+            silent_limit: DEFAULT_SILENT_LIMIT,
         }
     }
 
@@ -288,10 +304,39 @@ mod tests {
         assert_eq!(outcome, Outcome::Filtered);
         assert_eq!(
             hops.len(),
-            1 + SILENT_HOP_LIMIT as usize,
+            1 + DEFAULT_SILENT_LIMIT as usize,
             "the hop that trips the limit is still reported"
         );
         assert!(hops.last().unwrap().is_silent());
+    }
+
+    #[test]
+    fn the_silent_limit_is_configurable() {
+        let target = ip(99);
+        let path = Path::new(vec![Some(ip(1))], target);
+
+        let mut c = cfg(1);
+        c.silent_limit = 2;
+        let (hops, outcome) = collect(&path, &c);
+
+        assert_eq!(outcome, Outcome::Filtered);
+        assert_eq!(hops.len(), 3, "one answering hop plus the two silent ones");
+    }
+
+    #[test]
+    fn a_zero_silent_limit_walks_every_hop() {
+        // The `tracert` behaviour: never give up early, however dark the path.
+        let target = ip(99);
+        let path = Path::new(vec![Some(ip(1))], target);
+
+        let mut c = cfg(1);
+        c.silent_limit = 0;
+        c.max_hops = 12;
+        let (hops, outcome) = collect(&path, &c);
+
+        assert_eq!(outcome, Outcome::MaxHops);
+        assert_eq!(hops.len(), 12);
+        assert!(hops[11].is_silent());
     }
 
     #[test]
@@ -349,23 +394,42 @@ mod tests {
 
     #[test]
     fn config_is_clamped_to_a_usable_range() {
-        let (hops, probes, timeout) = TraceConfig {
+        let low = TraceConfig {
             max_hops: 0,
             probes: 0,
             timeout_ms: 1,
+            silent_limit: 3,
         }
         .sanitised();
-        assert_eq!((hops, probes), (1, 1));
-        assert_eq!(timeout, Duration::from_millis(100));
+        assert_eq!((low.max_hops, low.probes), (1, 1));
+        assert_eq!(low.timeout, Duration::from_millis(100));
 
-        let (hops, probes, timeout) = TraceConfig {
+        let high = TraceConfig {
             max_hops: 250,
             probes: 200,
             timeout_ms: 600_000,
+            silent_limit: 3,
         }
         .sanitised();
-        assert_eq!((hops, probes), (64, 10));
-        assert_eq!(timeout, Duration::from_millis(10_000));
+        assert_eq!((high.max_hops, high.probes), (64, 10));
+        assert_eq!(high.timeout, Duration::from_millis(10_000));
+    }
+
+    #[test]
+    fn only_a_zero_silent_limit_disables_the_cutoff() {
+        let off = TraceConfig {
+            silent_limit: 0,
+            ..TraceConfig::default()
+        }
+        .sanitised();
+        assert_eq!(off.silent_limit, None);
+
+        let on = TraceConfig {
+            silent_limit: 1,
+            ..TraceConfig::default()
+        }
+        .sanitised();
+        assert_eq!(on.silent_limit, Some(1));
     }
 
     #[test]
@@ -374,5 +438,6 @@ mod tests {
         assert_eq!(d.max_hops, DEFAULT_MAX_HOPS);
         assert_eq!(d.probes, DEFAULT_PROBES);
         assert_eq!(d.timeout_ms, DEFAULT_TIMEOUT_MS);
+        assert_eq!(d.silent_limit, DEFAULT_SILENT_LIMIT);
     }
 }

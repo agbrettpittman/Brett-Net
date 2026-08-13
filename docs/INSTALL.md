@@ -66,6 +66,42 @@ came back.
 
 ---
 
+## Tracing a path
+
+The **Path** tab walks the route to a host, one line per router in between.
+
+| Control | What it does |
+|---|---|
+| **Give up after** | Stops once this many hops in a row fail to answer. **Never** walks all 30, like `tracert`. |
+| **Look up networks** | Names the operator behind each public hop. |
+
+**`no reply` is normal.** Plenty of routers are configured not to answer, and
+the trace carries straight on past them. Only an unbroken run of them means the
+path is filtered — which is common on a corporate network and does *not* mean
+anything is broken. Raise **Give up after**, or set it to Never, if you want to
+keep pushing past it.
+
+**Times are the best of three probes.** A router answering a ping does so
+whenever it gets round to it, so a slow reply means a busy router rather than a
+slow path. All three probes are shown so an intermittent hop is visible.
+
+### What "Look up networks" sends
+
+It asks `whois.cymru.com` (port 43) which network owns each hop, which is where
+the `AS15169 GOOGLE` column comes from.
+
+**Only public addresses are ever sent.** Private ranges (`10.x`, `192.168.x`,
+`172.16–31.x`), loopback, link-local and carrier-grade NAT (`100.64–127.x`) are
+filtered out before anything leaves the machine — so internal hops on your own
+network stay internal. That is also why those rows show a blank network: it is
+expected, not missing data.
+
+Turn the checkbox off if you would rather nothing left the machine at all.
+Everything else on the tab works the same either way, and if port 43 is blocked
+the column is simply empty.
+
+---
+
 ## Where your data lives
 
 Both locations survive upgrades — installing a newer version keeps your hosts

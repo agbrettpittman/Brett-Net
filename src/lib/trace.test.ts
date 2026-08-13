@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { hopBest, hopLoss, hopNote, outcomeMessage } from './trace';
-import type { TraceHop } from './ipc';
+import { formatAsn, hopBest, hopLoss, hopNote, networkName, outcomeMessage } from './trace';
+import type { AsnInfo, TraceHop } from './ipc';
 
 function hop(ttl: number): TraceHop {
   return { ttl, addr: '10.0.0.1', rttsUs: [1000], status: 'ttlExpired', reached: false };
@@ -61,10 +61,51 @@ describe('outcomeMessage', () => {
     expect(msg).not.toMatch(/error|failed/i);
   });
 
+  it('points at the setting that changes the cutoff', () => {
+    expect(outcomeMessage('filtered', [hop(1)])).toMatch(/Give up after/);
+  });
+
   it('covers every outcome', () => {
     const outcomes = ['reached', 'maxHops', 'filtered', 'cancelled'] as const;
     for (const o of outcomes) {
       expect(outcomeMessage(o, [hop(1)])).toBeTruthy();
     }
+  });
+});
+
+describe('formatAsn', () => {
+  it('writes an AS number the conventional way', () => {
+    expect(formatAsn(13335)).toBe('AS13335');
+  });
+
+  it('is blank for an address with no ASN', () => {
+    expect(formatAsn(null)).toBe('');
+  });
+});
+
+describe('networkName', () => {
+  function info(asn: number | null, name: string | null): AsnInfo {
+    return { ip: '1.1.1.1', asn, name, prefix: null, country: null };
+  }
+
+  it('drops a prefix that only repeats the ASN column', () => {
+    // Networks with no registered handle come back like this.
+    expect(networkName(info(6453, 'AS6453 - TATA COMMUNICATIONS (AMERICA) INC'))).toBe(
+      'TATA COMMUNICATIONS (AMERICA) INC',
+    );
+  });
+
+  it('leaves a real handle alone', () => {
+    expect(networkName(info(174, 'COGENT-174 - Cogent Communications, LLC'))).toBe(
+      'COGENT-174 - Cogent Communications, LLC',
+    );
+  });
+
+  it('does not strip a different ASN that happens to appear', () => {
+    expect(networkName(info(174, 'AS6453 - SOMEONE ELSE'))).toBe('AS6453 - SOMEONE ELSE');
+  });
+
+  it('handles a missing name', () => {
+    expect(networkName(info(174, null))).toBe('');
   });
 });

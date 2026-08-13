@@ -1,13 +1,41 @@
 import { useCallback, useRef, useState } from 'react';
 import {
+  lookupAsn,
   runTrace,
   stopTrace,
   TRACE_DEFAULTS,
+  type AsnInfo,
   type TraceHop,
   type TraceOutcome,
 } from '../../lib/ipc';
-import { hopBest, hopLoss, hopNote, outcomeMessage } from '../../lib/trace';
+import {
+  formatAsn,
+  hopBest,
+  hopLoss,
+  hopNote,
+  networkName,
+  outcomeMessage,
+} from '../../lib/trace';
 import { formatMs } from '../../lib/stats';
+import { readBoolean, readNumber, write } from '../../lib/prefs';
+
+/**
+ * Consecutive unanswered hops before the trace gives up.
+ *
+ * The right number depends entirely on the network — a path with several
+ * deliberately quiet routers needs a higher one, and behind a firewall that
+ * drops TTL-expired ICMP a lower one saves two minutes of waiting. "Never" is
+ * `tracert`'s behaviour: walk all 30 regardless.
+ */
+const SILENT_LIMITS = [
+  { value: 3, label: '3 silent hops' },
+  { value: 5, label: '5 silent hops' },
+  { value: 10, label: '10 silent hops' },
+  { value: 0, label: 'Never' },
+] as const;
+
+const SILENT_KEY = 'path.silentLimit';
+const ASN_KEY = 'path.lookupAsn';
 
 /**
  * Traceroute view.
@@ -22,10 +50,41 @@ export function PathView() {
   const [resolved, setResolved] = useState<{ target: string; addr: string } | null>(null);
   const [outcome, setOutcome] = useState<TraceOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asn, setAsn] = useState<Map<string, AsnInfo>>(new Map());
+  const [silentLimit, setSilentLimit] = useState(() =>
+    readNumber(localStorage, SILENT_KEY, TRACE_DEFAULTS.silentLimit),
+  );
+  const [withAsn, setWithAsn] = useState(() => readBoolean(localStorage, ASN_KEY, true));
 
-  // Read inside the outcome message, which is built after the last state
-  // update has been queued but before React has applied it.
+  // Read when the trace ends, before React has applied the last state update.
   const collected = useRef<TraceHop[]>([]);
+  const withAsnRef = useRef(withAsn);
+  withAsnRef.current = withAsn;
+
+  /**
+   * Names the networks once the path is known.
+   *
+   * Deliberately after the trace rather than per hop: one bulk query answers
+   * every address at once, where a lookup per hop would be a dozen round trips
+   * and would slow down the thing being measured.
+   */
+  const nameNetworks = useCallback((found: TraceHop[]) => {
+    if (!withAsnRef.current) return;
+    const ips = [...new Set(found.map((h) => h.addr).filter((a): a is string => a !== null))];
+    if (ips.length === 0) return;
+
+    lookupAsn(ips)
+      .then((infos) => {
+        setAsn((prev) => {
+          const next = new Map(prev);
+          for (const info of infos) next.set(info.ip, info);
+          return next;
+        });
+      })
+      // Port 43 may well be blocked. A trace without network names is still a
+      // useful trace, so this is never surfaced as an error.
+      .catch(() => {});
+  }, []);
 
   const start = useCallback(() => {
     const t = target.trim();
@@ -38,7 +97,7 @@ export function PathView() {
     setError(null);
     setRunning(true);
 
-    runTrace(t, TRACE_DEFAULTS, (event) => {
+    runTrace(t, { ...TRACE_DEFAULTS, silentLimit }, (event) => {
       switch (event.kind) {
         case 'resolved':
           setResolved({ target: event.target, addr: event.addr });
@@ -51,22 +110,33 @@ export function PathView() {
         }
         case 'done':
           setOutcome(event.outcome);
+          nameNetworks(collected.current);
           break;
       }
     })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setRunning(false));
-  }, [target, running]);
+  }, [target, running, silentLimit, nameNetworks]);
 
   const stop = useCallback(() => {
     stopTrace().catch(() => {});
+  }, []);
+
+  const changeSilentLimit = useCallback((v: number) => {
+    write(localStorage, SILENT_KEY, v);
+    setSilentLimit(v);
+  }, []);
+
+  const toggleAsn = useCallback((on: boolean) => {
+    write(localStorage, ASN_KEY, on);
+    setWithAsn(on);
   }, []);
 
   const probes = TRACE_DEFAULTS.probes;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-5 py-2.5 text-xs">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-5 py-2.5 text-xs">
         <label htmlFor="trace-target" className="text-text-muted">
           Trace to
         </label>
@@ -79,7 +149,7 @@ export function PathView() {
           }}
           spellCheck={false}
           placeholder="hostname or IP"
-          className="w-64 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs outline-none focus:border-accent"
+          className="w-56 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs outline-none focus:border-accent"
         />
         {running ? (
           <button
@@ -99,9 +169,42 @@ export function PathView() {
         )}
 
         {resolved && resolved.target !== resolved.addr && (
-          <span className="ml-2 font-mono text-text-muted">→ {resolved.addr}</span>
+          <span className="font-mono text-text-muted">→ {resolved.addr}</span>
         )}
         {running && <span className="text-text-muted">Tracing…</span>}
+
+        <span className="ml-auto flex items-center gap-4">
+          <label
+            className="flex items-center gap-1.5"
+            title="Stop once this many hops in a row fail to answer. Never walks all 30, like tracert."
+          >
+            <span className="text-text-muted">Give up after</span>
+            <select
+              value={silentLimit}
+              onChange={(e) => changeSilentLimit(Number(e.target.value))}
+              className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-xs outline-none focus:border-accent"
+            >
+              {SILENT_LIMITS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label
+            className="flex items-center gap-1.5"
+            title="Look up the network operator for each public hop, via whois.cymru.com. Private and internal addresses are never sent."
+          >
+            <input
+              type="checkbox"
+              checked={withAsn}
+              onChange={(e) => toggleAsn(e.target.checked)}
+              className="accent-[var(--accent)]"
+            />
+            <span className="text-text-muted">Look up networks</span>
+          </label>
+        </span>
       </div>
 
       {error && (
@@ -121,11 +224,12 @@ export function PathView() {
           // Capped rather than full-width: stretched across a wide window the
           // numeric columns drift so far from the address that a row stops
           // reading as one hop.
-          <table className="w-full max-w-3xl text-xs">
+          <table className="w-full max-w-5xl text-xs">
             <thead>
               <tr className="text-left text-text-muted">
                 <th className="pb-2 font-medium">#</th>
                 <th className="pb-2 font-medium">Address</th>
+                {withAsn && <th className="pb-2 font-medium">Network</th>}
                 <th className="pb-2 text-right font-medium">Best</th>
                 <th className="pb-2 text-right font-medium">Loss</th>
                 {Array.from({ length: probes }, (_, i) => (
@@ -139,16 +243,31 @@ export function PathView() {
               {hops.map((h) => {
                 const note = hopNote(h.status);
                 const loss = hopLoss(h.rttsUs);
+                const net = h.addr === null ? undefined : asn.get(h.addr);
                 return (
                   <tr key={h.ttl} className="border-t border-border">
-                    <td className="py-1.5 font-mono text-text-muted">{h.ttl}</td>
-                    <td className="py-1.5 font-mono" data-selectable>
+                    <td className="py-1.5 pr-3 font-mono text-text-muted">{h.ttl}</td>
+                    <td className="py-1.5 pr-4 font-mono" data-selectable>
                       {h.addr ?? <span className="text-text-muted">no reply</span>}
-                      {h.reached && (
-                        <span className="ml-2 text-[11px] text-ok">target</span>
-                      )}
+                      {h.reached && <span className="ml-2 text-[11px] text-ok">target</span>}
                       {note && <span className="ml-2 text-[11px] text-warn">{note}</span>}
                     </td>
+                    {withAsn && (
+                      <td className="py-1.5 pr-4" data-selectable>
+                        {net ? (
+                          <span className="flex items-baseline gap-2">
+                            <span className="font-mono text-text-muted">
+                              {formatAsn(net.asn)}
+                            </span>
+                            <span className="truncate">{networkName(net)}</span>
+                          </span>
+                        ) : (
+                          // Blank rather than "—": a private hop having no
+                          // public network is normal, not missing data.
+                          ''
+                        )}
+                      </td>
+                    )}
                     <td className="py-1.5 text-right font-mono">
                       {formatMs(hopBest(h.rttsUs))}
                     </td>
@@ -175,7 +294,9 @@ export function PathView() {
         )}
 
         {outcome && (
-          <p className="mt-4 text-xs text-text-muted">{outcomeMessage(outcome, hops)}</p>
+          <p className="mt-4 max-w-5xl text-xs text-text-muted">
+            {outcomeMessage(outcome, hops)}
+          </p>
         )}
       </div>
     </div>

@@ -161,13 +161,38 @@ export interface TraceConfig {
   maxHops: number;
   probes: number;
   timeoutMs: number;
+  /** Consecutive silent hops before giving up. 0 walks the full `maxHops`. */
+  silentLimit: number;
 }
 
 export const TRACE_DEFAULTS: TraceConfig = {
   maxHops: 30,
   probes: 3,
   timeoutMs: 1500,
+  silentLimit: 5,
 };
+
+/** Mirrors `asn::AsnInfo`. */
+export interface AsnInfo {
+  ip: string;
+  /** Null for an address not announced in BGP. */
+  asn: number | null;
+  /** Network operator, e.g. `CLOUDFLARENET - Cloudflare, Inc.` */
+  name: string | null;
+  prefix: string | null;
+  country: string | null;
+}
+
+/**
+ * Names the networks behind a set of hop addresses.
+ *
+ * Private, loopback and carrier-grade-NAT addresses are dropped in Rust before
+ * anything leaves the machine. Addresses that could not be looked up are simply
+ * absent from the result rather than being an error.
+ */
+export function lookupAsn(ips: string[]): Promise<AsnInfo[]> {
+  return invoke<AsnInfo[]>('lookup_asn', { ips });
+}
 
 /**
  * Walks the path to `target`, calling `onEvent` as each hop is discovered.
