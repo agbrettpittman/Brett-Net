@@ -310,6 +310,10 @@ fn platform_backend() -> icmp::mock::MockBackend {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Dormant on purpose. The endpoint 404s until a release publishes a
+        // `latest.json`, at which point every already-installed copy starts
+        // offering updates — the public key is baked in, so no reinstall.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             // A history database that cannot be opened must not stop the app

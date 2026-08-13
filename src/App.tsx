@@ -30,6 +30,7 @@ import {
 import { AddHosts } from './components/AddHosts';
 import { EditHost } from './components/EditHost';
 import { ThemeToggle } from './components/ThemeToggle';
+import { UpdateBanner } from './components/UpdateBanner';
 import { LatencyChart } from './features/ping/LatencyChart';
 import { BUCKETS, SPANS } from './lib/aggregate';
 
@@ -129,7 +130,10 @@ export default function App() {
       try {
         const s = await loadSettings();
         if (s) {
-          if (s.hosts?.length) {
+          // An empty saved list is a real choice — someone removed every host.
+          // Treating it as "nothing saved" would resurrect the defaults on the
+          // next launch, undoing the deletion.
+          if (Array.isArray(s.hosts)) {
             restored = s.hosts;
             setHosts(s.hosts);
           }
@@ -375,6 +379,8 @@ export default function App() {
         </span>
       </div>
 
+      <UpdateBanner />
+
       {error && (
         <p className="mx-5 mt-3 shrink-0 rounded-md border border-danger/40 px-3 py-2 font-mono text-xs text-danger">
           {error}
@@ -407,14 +413,14 @@ export default function App() {
             revision={revision}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-text-muted">
-            Add a host to start graphing.
-          </div>
+          <EmptyState />
         )}
       </section>
 
       <section className="max-h-[38%] shrink-0 overflow-auto border-t border-border px-5 py-3">
-        <table className="w-full text-xs">
+        {/* Column headings above no rows read as a loading state, not an
+            empty one — the empty state on the chart says it already. */}
+        <table className={`w-full text-xs ${hosts.length === 0 ? 'hidden' : ''}`}>
           <thead>
             <tr className="text-left text-text-muted">
               <th className="pb-2 font-medium">Host</th>
@@ -527,6 +533,36 @@ function Select({
         ))}
       </select>
     </label>
+  );
+}
+
+/**
+ * Shown when every host has been removed. Reached rarely — the app ships with
+ * three defaults — but an empty chart with no explanation reads as broken.
+ */
+function EmptyState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
+      <svg
+        width="34"
+        height="34"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-border"
+        aria-hidden
+      >
+        <path d="M2 13h4l3 7 4-16 3 9h6" />
+      </svg>
+      <p className="text-sm font-medium">No hosts yet</p>
+      <p className="max-w-sm text-xs text-text-muted">
+        Add something to ping and its latency will be graphed here, one line per
+        host. Paste a whole list at once — IPs, hostnames, or a CIDR range.
+      </p>
+    </div>
   );
 }
 

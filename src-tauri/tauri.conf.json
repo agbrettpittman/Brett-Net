@@ -39,14 +39,26 @@
     "category": "Utility",
     "shortDescription": "Network monitoring toolkit",
     "longDescription": "Monitor latency across many hosts at once, trace network paths, and inspect local network configuration.",
+    "publisher": "Brett Pittman",
+    "homepage": "https://github.com/agbrettpittman/Brett-Net",
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": ["English"],
+        "displayLanguageSelector": false
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ1RjE5QjU3RkM3OTRBNjMKUldSalNubjhWNXZ4MWVNblhKSmRmOWtIanl6SXZTcXN6N1orT0NvY3JHVWlKWktuQi9XVGlDdy8K",
+      "endpoints": [
+        "https://github.com/agbrettpittman/Brett-Net/releases/latest/download/latest.json"
+      ]
     }
   }
 }
