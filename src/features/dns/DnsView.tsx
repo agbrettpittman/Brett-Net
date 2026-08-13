@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   COMMON_PORTS,
   dnsLookup,
@@ -7,13 +7,37 @@ import {
   type DnsResult,
   type PortResult,
   type PortState,
+  type ScanSummary,
 } from '../../lib/ipc';
-import { parsePorts } from '../../lib/ports';
+import { estimateScanSeconds, parsePorts } from '../../lib/ports';
 import { formatMs } from '../../lib/stats';
 import { readNumber, write } from '../../lib/prefs';
 
 const PORTS_KEY = 'dns.ports';
 const TIMEOUT_KEY = 'dns.timeoutMs';
+
+/**
+ * Starting points for the port list.
+ *
+ * The wide ranges are the reason the scan is worth having — "what is this box
+ * actually running" is not a question twelve common ports can answer.
+ */
+const PRESETS = [
+  { label: 'Common', value: COMMON_PORTS },
+  { label: 'Well-known (1-1024)', value: '1-1024' },
+  { label: 'Common + registered (1-10000)', value: '1-10000' },
+  { label: 'Everything (1-65535)', value: '1-65535' },
+] as const;
+
+/** Above this, the backend sends only open ports. Matches `SCAN_DETAIL_LIMIT`. */
+const DETAIL_LIMIT = 64;
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)}s`;
+  const mins = Math.ceil(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  return `${(mins / 60).toFixed(1)} hr`;
+}
 
 const TIMEOUTS = [
   { value: 500, label: '0.5s' },
@@ -62,9 +86,16 @@ export function DnsView() {
   const [scanning, setScanning] = useState(false);
   const [results, setResults] = useState<PortResult[]>([]);
   const [scanned, setScanned] = useState<{ target: string; addr: string } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [summary, setSummary] = useState<{ counts: ScanSummary; openOnly: boolean } | null>(
+    null,
+  );
 
   const collected = useRef<PortResult[]>([]);
-  const parsed = parsePorts(portsText);
+  // Memoised: `1-65535` is a legal input, and re-parsing 65,535 ports on every
+  // render would make the whole tab crawl.
+  const parsed = useMemo(() => parsePorts(portsText), [portsText]);
+  const estimate = estimateScanSeconds(parsed.ports.length, timeoutMs);
 
   const lookup = useCallback(() => {
     const h = host.trim();
@@ -86,6 +117,8 @@ export function DnsView() {
     collected.current = [];
     setResults([]);
     setScanned(null);
+    setProgress(null);
+    setSummary(null);
     setError(null);
     setScanning(true);
 
@@ -93,6 +126,7 @@ export function DnsView() {
       switch (event.kind) {
         case 'resolved':
           setScanned({ target: event.target, addr: event.addr });
+          setProgress({ done: 0, total: event.total });
           break;
         case 'port': {
           const { kind: _kind, ...result } = event;
@@ -102,7 +136,11 @@ export function DnsView() {
           setResults(collected.current);
           break;
         }
+        case 'progress':
+          setProgress({ done: event.done, total: event.total });
+          break;
         case 'done':
+          setSummary({ counts: event.summary, openOnly: event.openOnly });
           break;
       }
     })
@@ -231,13 +269,49 @@ export function DnsView() {
               <span className="text-warn">{parsed.error}</span>
             ) : (
               <span className="text-text-muted">
-                {parsed.ports.length} port{parsed.ports.length === 1 ? '' : 's'}
+                {parsed.ports.length.toLocaleString()} port
+                {parsed.ports.length === 1 ? '' : 's'}
+                {/* Worth saying before someone starts a full-range scan and
+                    assumes it has hung. */}
+                {estimate > 20 && <> · up to {formatDuration(estimate)}</>}
               </span>
             )}
             {scanned && scanned.target !== scanned.addr && (
               <span className="font-mono text-text-muted">→ {scanned.addr}</span>
             )}
           </div>
+
+          <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+            <span className="text-text-muted">Presets</span>
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => changePorts(p.value)}
+                disabled={scanning}
+                className={`rounded-md border px-2 py-0.5 transition-colors disabled:opacity-40 ${
+                  portsText === p.value
+                    ? 'border-accent text-accent'
+                    : 'border-border text-text-muted hover:text-text'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {progress && progress.total > 0 && (scanning || progress.done < progress.total) && (
+            <div className="mb-3 flex max-w-lg items-center gap-3 text-xs">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-2">
+                <div
+                  className="h-full bg-accent transition-[width] duration-200"
+                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                />
+              </div>
+              <span className="shrink-0 font-mono text-text-muted">
+                {progress.done.toLocaleString()} / {progress.total.toLocaleString()}
+              </span>
+            </div>
+          )}
 
           {results.length > 0 && (
             <table className="w-full max-w-lg text-xs">
@@ -264,15 +338,39 @@ export function DnsView() {
             </table>
           )}
 
-          {results.length === 0 && !scanning && (
-            <p className="text-xs text-text-muted">
-              Checks whether a TCP port accepts connections. <em>Refused</em> means nothing
-              is listening but the host answered — which also makes this the way to monitor
-              something that blocks ping entirely.
+          {summary && (
+            <p className="mt-3 max-w-lg text-xs text-text-muted">
+              {summary.counts.checked.toLocaleString()} checked ·{' '}
+              <span className={summary.counts.open > 0 ? 'text-ok' : ''}>
+                {summary.counts.open.toLocaleString()} open
+              </span>{' '}
+              · {summary.counts.refused.toLocaleString()} refused ·{' '}
+              {summary.counts.filtered.toLocaleString()} no answer
+              {summary.openOnly && (
+                // Otherwise a table of three rows after checking 65,000 ports
+                // looks like most of the results went missing.
+                <>
+                  {' '}
+                  — only open ports are listed above; there are too many to show
+                  individually.
+                </>
+              )}
+              {summary.counts.refused > 0 && summary.counts.open === 0 && (
+                <> The host answered, so it is up — nothing was listening.</>
+              )}
             </p>
           )}
 
-          {scanning && results.length === 0 && (
+          {results.length === 0 && !scanning && !summary && (
+            <p className="max-w-2xl text-xs text-text-muted">
+              Checks whether TCP ports accept connections. <em>Refused</em> means nothing is
+              listening but the host answered — which also makes this the way to monitor
+              something that blocks ping entirely. Wide ranges are fine; above {DETAIL_LIMIT}{' '}
+              ports only the open ones are listed.
+            </p>
+          )}
+
+          {scanning && results.length === 0 && !progress && (
             <p className="text-xs text-text-muted">Checking…</p>
           )}
         </section>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PORTS, parsePorts } from './ports';
+import { estimateScanSeconds, MAX_PORTS, parsePorts } from './ports';
 
 function ok(input: string): number[] {
   const r = parsePorts(input);
@@ -71,8 +71,32 @@ describe('parsePorts', () => {
     expect(err('1-2-3')).toMatch(/not a port or range/);
   });
 
-  it('caps the number of ports', () => {
-    expect(err('1-1000')).toMatch(/Too many/);
-    expect(ok(`1-${MAX_PORTS}`)).toHaveLength(MAX_PORTS);
+  it('accepts the whole port space', () => {
+    expect(ok('1-65535')).toHaveLength(MAX_PORTS);
+  });
+
+  it('parses a full-range scan fast enough to run while typing', () => {
+    // The dedup was a linear scan per port, which at this size is billions of
+    // comparisons — enough to lock the window mid-keystroke.
+    const started = performance.now();
+    ok('1-65535');
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe('estimateScanSeconds', () => {
+  it('scales with how many batches of workers it takes', () => {
+    // One batch of 256 at a 2s timeout.
+    expect(estimateScanSeconds(256, 2000)).toBe(2);
+    expect(estimateScanSeconds(512, 2000)).toBe(4);
+  });
+
+  it('rounds a partial batch up, since it still costs a full timeout', () => {
+    expect(estimateScanSeconds(1, 2000)).toBe(2);
+    expect(estimateScanSeconds(257, 2000)).toBe(4);
+  });
+
+  it('shows a full-range scan as minutes rather than seconds', () => {
+    expect(estimateScanSeconds(65535, 2000)).toBeGreaterThan(300);
   });
 });

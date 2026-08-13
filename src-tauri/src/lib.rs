@@ -384,14 +384,30 @@ pub enum ScanEvent {
     Resolved {
         target: String,
         addr: String,
+        total: usize,
     },
     Port(probe::PortResult),
+    Progress {
+        done: usize,
+        total: usize,
+    },
     Done {
-        checked: usize,
+        summary: probe::ScanSummary,
+        /// True when only open ports were forwarded, so the UI can explain why
+        /// the table is shorter than the number checked.
+        open_only: bool,
     },
 }
 
-/// Checks TCP ports on a host, reporting each as it finishes.
+/// Above this many ports, only *open* ones are forwarded to the frontend.
+///
+/// Scanning the whole port space against a live host gets a refusal on every
+/// closed port — 65,000 rows saying "closed", which is useless to read and
+/// enough IPC traffic to lock the window up. The counts still come back in the
+/// summary, so nothing is lost except the noise.
+const SCAN_DETAIL_LIMIT: usize = 64;
+
+/// Checks TCP ports on a host, reporting results as they finish.
 ///
 /// Shares the trace cancel flag: both are "the one long-running probe", and
 /// only one of them is ever useful at a time.
@@ -421,23 +437,34 @@ async fn scan_ports(
             .parse()
             .map_err(|e| format!("{host}: {e}"))?;
 
+        let ports = probe::sanitise_ports(&config.ports);
+        let total = ports.len();
+        let open_only = total > SCAN_DETAIL_LIMIT;
+
         let _ = on_event.send(ScanEvent::Resolved {
             target: host,
             addr: addr.to_string(),
+            total,
         });
 
-        let ports = probe::sanitise_ports(&config.ports);
         let timeout = Duration::from_millis(config.timeout_ms.clamp(100, 10_000));
-        let checked = std::sync::atomic::AtomicUsize::new(0);
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        // Roughly a hundred progress events over the whole scan, however wide
+        // it is — enough for a smooth bar, few enough to be free.
+        let step = (total / 100).max(1);
 
-        probe::scan(addr, &ports, timeout, &flag, |result| {
-            checked.fetch_add(1, Ordering::Relaxed);
-            let _ = on_event.send(ScanEvent::Port(result));
+        let summary = probe::scan(addr, &ports, timeout, &flag, |result| {
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if !open_only || result.state == probe::PortState::Open {
+                let _ = on_event.send(ScanEvent::Port(result));
+            }
+            if n % step == 0 || n == total {
+                let _ = on_event.send(ScanEvent::Progress { done: n, total });
+            }
         });
 
-        let _ = on_event.send(ScanEvent::Done {
-            checked: checked.load(Ordering::Relaxed),
-        });
+        let _ = on_event.send(ScanEvent::Done { summary, open_only });
         Ok(())
     })
     .await

@@ -232,10 +232,19 @@ export interface PortResult {
   ms: number | null;
 }
 
+export interface ScanSummary {
+  checked: number;
+  open: number;
+  refused: number;
+  filtered: number;
+}
+
 export type ScanEvent =
-  | { kind: 'resolved'; target: string; addr: string }
+  | { kind: 'resolved'; target: string; addr: string; total: number }
   | ({ kind: 'port' } & PortResult)
-  | { kind: 'done'; checked: number };
+  | { kind: 'progress'; done: number; total: number }
+  /** `openOnly` means closed ports were counted but not listed. */
+  | { kind: 'done'; summary: ScanSummary; openOnly: boolean };
 
 /** Ports offered as a starting point, matching `probe::COMMON_PORTS`. */
 export const COMMON_PORTS = '21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3389, 8080';

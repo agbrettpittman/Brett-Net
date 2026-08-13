@@ -1,5 +1,21 @@
-/** Matches `probe::MAX_PORTS`. */
-export const MAX_PORTS = 128;
+/** Matches `probe::MAX_PORTS` — the whole TCP port space. */
+export const MAX_PORTS = 65535;
+
+/** Matches `probe::MAX_WORKERS`, for estimating how long a scan will take. */
+export const SCAN_WORKERS = 256;
+
+/**
+ * Rough seconds a scan will take, worst case.
+ *
+ * Assumes every port times out, which is what happens against a host that
+ * silently drops. Anything that answers is far quicker, so this is a ceiling
+ * rather than a prediction — but a full-range scan is minutes, not seconds, and
+ * that is worth saying before someone starts one.
+ */
+export function estimateScanSeconds(portCount: number, timeoutMs: number): number {
+  const batches = Math.ceil(portCount / SCAN_WORKERS);
+  return (batches * timeoutMs) / 1000;
+}
 
 export interface ParsedPorts {
   ports: number[];
@@ -19,6 +35,10 @@ export interface ParsedPorts {
  */
 export function parsePorts(input: string): ParsedPorts {
   const ports: number[] = [];
+  // A Set rather than `ports.includes`. `1-65535` is a legal input, and a
+  // linear scan per port would be billions of comparisons — enough to lock the
+  // window while someone is still typing.
+  const seen = new Set<number>();
 
   for (const token of input.split(/[\s,]+/)) {
     if (token === '') continue;
@@ -39,7 +59,9 @@ export function parsePorts(input: string): ParsedPorts {
     }
 
     for (let p = lo!; p <= hi!; p++) {
-      if (!ports.includes(p)) ports.push(p);
+      if (seen.has(p)) continue;
+      seen.add(p);
+      ports.push(p);
       if (ports.length > MAX_PORTS) {
         return { ports: [], error: `Too many ports — ${MAX_PORTS} at a time.` };
       }

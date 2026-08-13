@@ -109,7 +109,7 @@ client would try them. The first is flagged, because that is the one that will
 actually be used.
 
 **Check ports** tries a TCP connection to each port you list. Ranges work:
-`80, 443, 8000-8010`.
+`80, 443, 8000-8010`, and the presets go up to the whole port space.
 
 | Result | What it means |
 |---|---|
@@ -127,6 +127,31 @@ and try again — a short wait cannot see an answer that has not arrived yet.
 This is also the way to monitor something that blocks ping entirely: if a host
 answers on a TCP port but never replies to ping, the network is filtering ICMP
 rather than the host being down.
+
+### Wide scans
+
+Scanning a whole range works — the presets go from a dozen common ports up to
+all 65,535. Two hundred and fifty-six ports are checked at once, so:
+
+| Range | Roughly |
+|---|---|
+| 1–1024 | a few seconds |
+| 1–10000 | a minute or so |
+| 1–65535 | 5–10 minutes |
+
+The estimate next to the port count is a **ceiling** — it assumes every port
+times out, which only happens against a host that drops everything. Anything
+that answers is far quicker. Progress and a **Stop** button appear while it runs.
+
+Above 64 ports, only the **open** ones are listed. A live host refuses every
+closed port, and 65,000 rows saying "closed" is unreadable; the totals still
+appear in the summary underneath, so nothing is lost but the noise.
+
+> **Scan things you are responsible for.** This makes an ordinary TCP
+> connection to every port, which is exactly what it looks like to an intrusion
+> detection system — no different from `nmap` or `PortQry` in that respect. On
+> your own network that is routine; pointed at someone else's it may well
+> generate an alert, and in some places break policy or law.
 
 ---
 

@@ -15,11 +15,20 @@ use serde::{Deserialize, Serialize};
 /// different tool, and looks far more like an attack to anything watching.
 pub const COMMON_PORTS: [u16; 12] = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3389, 8080];
 
-/// Concurrent connection attempts. Enough to keep a scan brisk, low enough not
-/// to look like a port sweep.
-const WORKERS: usize = 8;
+/// Concurrent connection attempts.
+///
+/// This is what makes a wide scan finish in minutes rather than hours: at one
+/// port at a time, 65,535 ports against a host that drops everything would take
+/// a day and a half. Each worker is a thread blocked in `connect`, so they are
+/// cheap in CPU and cost only their stack.
+const MAX_WORKERS: usize = 256;
 
-pub const MAX_PORTS: usize = 128;
+/// Workers only block on a socket, so they need almost no stack. The default
+/// 1 MB reservation each would be 256 MB of address space for nothing.
+const WORKER_STACK: usize = 64 * 1024;
+
+/// Every TCP port. A scan is allowed to be as wide as the port space is.
+pub const MAX_PORTS: usize = 65535;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,30 +143,85 @@ pub fn check_port(ip: IpAddr, port: u16, timeout: Duration) -> PortResult {
     }
 }
 
+/// Tallies of what a scan found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanSummary {
+    pub checked: usize,
+    pub open: usize,
+    pub refused: usize,
+    pub filtered: usize,
+}
+
 /// Checks many ports, reporting each as it finishes.
 ///
-/// Runs a few at a time: sequentially, a dozen filtered ports at a two-second
-/// timeout is nearly half a minute of staring at nothing. Results arrive in
-/// completion order, so callers that care about port order must sort.
-pub fn scan<F>(ip: IpAddr, ports: &[u16], timeout: Duration, cancelled: &AtomicBool, on_result: F)
+/// Results arrive in completion order because the checks run concurrently, so
+/// callers that care about port order must sort. The returned summary is
+/// authoritative even when the caller chooses not to forward every result —
+/// which it should not, for a wide scan.
+pub fn scan<F>(
+    ip: IpAddr,
+    ports: &[u16],
+    timeout: Duration,
+    cancelled: &AtomicBool,
+    on_result: F,
+) -> ScanSummary
 where
     F: Fn(PortResult) + Send + Sync,
 {
     let next = AtomicUsize::new(0);
-    let workers = WORKERS.min(ports.len().max(1));
+    let open = AtomicUsize::new(0);
+    let refused = AtomicUsize::new(0);
+    let filtered = AtomicUsize::new(0);
+    let workers = MAX_WORKERS.min(ports.len()).max(1);
+
+    let work = || loop {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        let i = next.fetch_add(1, Ordering::Relaxed);
+        let Some(&port) = ports.get(i) else { break };
+
+        let result = check_port(ip, port, timeout);
+        match result.state {
+            PortState::Open => &open,
+            PortState::Refused => &refused,
+            PortState::Filtered => &filtered,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+
+        on_result(result);
+    };
 
     std::thread::scope(|scope| {
+        let mut spawned = 0;
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                if cancelled.load(Ordering::Relaxed) {
-                    break;
-                }
-                let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some(&port) = ports.get(i) else { break };
-                on_result(check_port(ip, port, timeout));
-            });
+            let started = std::thread::Builder::new()
+                .stack_size(WORKER_STACK)
+                .spawn_scoped(scope, work);
+            if started.is_err() {
+                break;
+            }
+            spawned += 1;
+        }
+        // A machine that will not hand over a single thread still gets its
+        // scan, just serially.
+        if spawned == 0 {
+            work();
         }
     });
+
+    let (open, refused, filtered) = (
+        open.load(Ordering::Relaxed),
+        refused.load(Ordering::Relaxed),
+        filtered.load(Ordering::Relaxed),
+    );
+    ScanSummary {
+        checked: open + refused + filtered,
+        open,
+        refused,
+        filtered,
+    }
 }
 
 /// Trims a port list to something a scan should actually attempt.
@@ -166,12 +230,18 @@ where
 /// this is the backstop, so a malformed or hostile IPC payload cannot turn the
 /// tool into a port sweeper.
 pub fn sanitise_ports(ports: &[u16]) -> Vec<u16> {
+    // A bitmap rather than `Vec::contains`. The whole port space is a legal
+    // list now, and a linear scan per entry would be four billion comparisons
+    // for a full-range scan — the guard would cost more than the scan.
+    let mut seen = vec![false; 1 << 16];
     let mut out: Vec<u16> = Vec::with_capacity(ports.len().min(MAX_PORTS));
+
     for &p in ports {
         // Port 0 parses fine but means "any", which cannot be connected to.
-        if p == 0 || out.contains(&p) {
+        if p == 0 || seen[p as usize] {
             continue;
         }
+        seen[p as usize] = true;
         out.push(p);
         if out.len() == MAX_PORTS {
             break;
@@ -191,9 +261,24 @@ mod tests {
     }
 
     #[test]
-    fn sanitise_caps_the_list() {
-        let many: Vec<u16> = (1..=1000).collect();
-        assert_eq!(sanitise_ports(&many).len(), MAX_PORTS);
+    fn sanitise_keeps_the_whole_port_space() {
+        let every: Vec<u16> = (1..=65535).collect();
+        assert_eq!(sanitise_ports(&every).len(), MAX_PORTS);
+    }
+
+    #[test]
+    fn sanitise_collapses_a_huge_duplicate_payload_quickly() {
+        // The dedup used to be a linear scan per entry. At this size that is
+        // billions of comparisons, and the guard would cost more than the scan
+        // it protects.
+        let spam: Vec<u16> = (0..200_000).map(|i| (i % 1000 + 1) as u16).collect();
+
+        let started = Instant::now();
+        let got = sanitise_ports(&spam);
+        let elapsed = started.elapsed();
+
+        assert_eq!(got.len(), 1000);
+        assert!(elapsed < Duration::from_millis(500), "took {elapsed:?}");
     }
 
     #[test]
@@ -278,13 +363,12 @@ mod tests {
     fn scan_reports_every_port_once() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let open = listener.local_addr().unwrap().port();
-        let ports: Vec<u16> = vec![open, open, 1, 2, 3];
         // The duplicate is deliberate: `scan` takes the list as given.
-        let unique = 5;
+        let ports: Vec<u16> = vec![open, open, 1, 2, 3];
 
         let seen = std::sync::Mutex::new(Vec::new());
         let flag = AtomicBool::new(false);
-        scan(
+        let summary = scan(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &ports,
             Duration::from_millis(500),
@@ -293,9 +377,34 @@ mod tests {
         );
 
         let seen = seen.into_inner().unwrap();
-        assert_eq!(seen.len(), unique);
-        assert!(seen.iter().filter(|r| r.port == open).count() == 2);
-        assert!(seen.iter().any(|r| r.state == PortState::Open));
+        assert_eq!(seen.len(), ports.len());
+        assert_eq!(seen.iter().filter(|r| r.port == open).count(), 2);
+        assert_eq!(summary.checked, ports.len());
+        assert_eq!(summary.open, 2);
+    }
+
+    #[test]
+    fn the_summary_counts_every_state() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let open = listener.local_addr().unwrap().port();
+        let closed = {
+            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            l.local_addr().unwrap().port()
+        };
+
+        let flag = AtomicBool::new(false);
+        let summary = scan(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &[open, closed],
+            Duration::from_secs(5),
+            &flag,
+            |_| {},
+        );
+
+        assert_eq!(summary.checked, 2);
+        assert_eq!(summary.open, 1);
+        assert_eq!(summary.refused, 1);
+        assert_eq!(summary.filtered, 0);
     }
 
     #[test]
@@ -303,7 +412,7 @@ mod tests {
         let flag = AtomicBool::new(true);
         let seen = std::sync::Mutex::new(Vec::new());
 
-        scan(
+        let summary = scan(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &(1..=50).collect::<Vec<u16>>(),
             Duration::from_secs(5),
@@ -312,19 +421,49 @@ mod tests {
         );
 
         assert!(seen.into_inner().unwrap().is_empty());
+        assert_eq!(summary, ScanSummary::default());
     }
 
     #[test]
     fn scan_of_an_empty_list_returns_immediately() {
-        // `WORKERS.min(0)` would spawn no workers; the `.max(1)` guard keeps
-        // the scope valid and this must simply do nothing.
+        // `MAX_WORKERS.min(0)` would spawn no workers; the `.max(1)` guard
+        // keeps the scope valid and this must simply do nothing.
         let flag = AtomicBool::new(false);
-        scan(
+        let summary = scan(
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             &[],
             Duration::from_millis(50),
             &flag,
             |_| panic!("nothing to check"),
+        );
+        assert_eq!(summary.checked, 0);
+    }
+
+    #[test]
+    fn a_wide_scan_uses_many_workers_at_once() {
+        // The point of the whole design: 600 dead ports must not be checked
+        // one at a time. Serially this would take ten minutes; concurrently it
+        // is a couple of seconds.
+        let ports: Vec<u16> = (1..=600).collect();
+        let flag = AtomicBool::new(false);
+
+        let started = Instant::now();
+        let summary = scan(
+            // TEST-NET-2, reserved and guaranteed unroutable, so every port
+            // takes the full timeout.
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+            &ports,
+            Duration::from_millis(500),
+            &flag,
+            |_| {},
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(summary.checked, 600);
+        assert_eq!(summary.filtered, 600);
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "600 ports took {elapsed:?}; concurrency is not working"
         );
     }
 
