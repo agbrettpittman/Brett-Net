@@ -38,6 +38,60 @@ impl PingStatus {
     pub fn is_success(self) -> bool {
         matches!(self, PingStatus::Success)
     }
+
+    /// Compact code for on-disk storage.
+    ///
+    /// Deliberately not the raw `IP_STATUS`: these are stable, one byte wide,
+    /// and unchanged if the Win32 mapping above ever grows a case. Existing
+    /// values must never be renumbered — a history database outlives a release.
+    pub fn code(self) -> u8 {
+        match self {
+            PingStatus::Success => 0,
+            PingStatus::TimedOut => 1,
+            PingStatus::DestHostUnreachable => 2,
+            PingStatus::DestNetUnreachable => 3,
+            PingStatus::TtlExpired => 4,
+            PingStatus::DnsFailure => 5,
+            PingStatus::Other => 6,
+        }
+    }
+
+    /// Inverse of [`PingStatus::code`]. Unrecognised codes — a database written
+    /// by a newer build — read back as `Other` rather than failing the query.
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            0 => PingStatus::Success,
+            1 => PingStatus::TimedOut,
+            2 => PingStatus::DestHostUnreachable,
+            3 => PingStatus::DestNetUnreachable,
+            4 => PingStatus::TtlExpired,
+            5 => PingStatus::DnsFailure,
+            _ => PingStatus::Other,
+        }
+    }
+
+    /// The same name the frontend sees, reused for CSV exports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PingStatus::Success => "success",
+            PingStatus::TimedOut => "timedOut",
+            PingStatus::DestHostUnreachable => "destHostUnreachable",
+            PingStatus::DestNetUnreachable => "destNetUnreachable",
+            PingStatus::TtlExpired => "ttlExpired",
+            PingStatus::DnsFailure => "dnsFailure",
+            PingStatus::Other => "other",
+        }
+    }
+
+    pub const ALL: [PingStatus; 7] = [
+        PingStatus::Success,
+        PingStatus::TimedOut,
+        PingStatus::DestHostUnreachable,
+        PingStatus::DestNetUnreachable,
+        PingStatus::TtlExpired,
+        PingStatus::DnsFailure,
+        PingStatus::Other,
+    ];
 }
 
 #[derive(Debug, Clone)]
@@ -135,5 +189,30 @@ mod tests {
         assert!(PingStatus::Success.is_success());
         assert!(!PingStatus::TimedOut.is_success());
         assert!(!PingStatus::TtlExpired.is_success());
+    }
+
+    #[test]
+    fn storage_codes_round_trip_and_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for s in PingStatus::ALL {
+            assert_eq!(PingStatus::from_code(s.code()), s);
+            assert!(seen.insert(s.code()), "duplicate code for {s:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_storage_codes_degrade_to_other() {
+        // A database written by a newer build must still be readable.
+        assert_eq!(PingStatus::from_code(200), PingStatus::Other);
+    }
+
+    #[test]
+    fn status_names_match_the_wire_format() {
+        // `as_str` must stay in step with the camelCase serde renaming, since
+        // the frontend's PingStatus union and CSV exports both rely on it.
+        for s in PingStatus::ALL {
+            let json = serde_json::to_string(&s).unwrap();
+            assert_eq!(json, format!("\"{}\"", s.as_str()));
+        }
     }
 }

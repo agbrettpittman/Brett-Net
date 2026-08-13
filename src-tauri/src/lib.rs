@@ -4,9 +4,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
+pub mod db;
 pub mod icmp;
 pub mod monitor;
 
+use db::History;
 use monitor::dns::{DnsCache, SystemResolver};
 use monitor::{HostSpec, MonitorConfig, MonitorHandle};
 
@@ -16,9 +18,14 @@ pub const PING_TICK_EVENT: &str = "ping://tick";
 /// How long a resolved hostname is trusted before re-resolving.
 const DNS_TTL: Duration = Duration::from_secs(300);
 
-#[derive(Default)]
 struct AppState {
     monitor: Mutex<Option<MonitorHandle>>,
+    /// `None` if the history database could not be opened. Monitoring still
+    /// works without it — losing the graph would be a far worse failure than
+    /// losing the log.
+    history: Option<Arc<History>>,
+    /// Why history is unavailable, if it is.
+    history_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -37,6 +44,8 @@ pub struct StartArgs {
     interval_ms: u64,
     /// Milliseconds to wait for a reply.
     timeout_ms: u64,
+    /// How many days of history to keep.
+    retention_days: u32,
 }
 
 #[tauri::command]
@@ -74,9 +83,21 @@ async fn start_monitor(
     let backend = Arc::new(platform_backend());
     let dns = Arc::new(DnsCache::new(Arc::new(SystemResolver), DNS_TTL));
 
+    let history = state.history.clone();
+    if let Some(h) = &history {
+        h.set_retention_days(args.retention_days);
+        h.register(args.hosts.clone());
+    }
+
     let emitter = app.clone();
     let handle = monitor::start(args.hosts, cfg, backend, dns, move |tick| {
-        let _ = emitter.emit(PING_TICK_EVENT, tick);
+        // Emit by reference so the tick can then be handed to the history
+        // writer without a clone. Recording is a channel send, never a disk
+        // write, so the scheduler is not slowed by it.
+        let _ = emitter.emit(PING_TICK_EVENT, &tick);
+        if let Some(h) = &history {
+            h.record(tick);
+        }
     });
 
     *state.monitor.lock().unwrap() = Some(handle);
@@ -100,6 +121,18 @@ fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("settings.json"))
+}
+
+/// Ping history goes in `%LOCALAPPDATA%`, not `%APPDATA%`. Roaming profiles and
+/// FSLogix synchronise `%APPDATA%` at every logon, and a time series that grows
+/// to hundreds of megabytes there would be a real problem on a managed machine.
+fn history_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = match std::env::var_os(DATA_DIR_ENV) {
+        Some(v) => std::path::PathBuf::from(v),
+        None => app.path().app_local_data_dir().map_err(|e| e.to_string())?,
+    };
+    Ok(dir.join("history.db"))
 }
 
 #[tauri::command]
@@ -146,6 +179,122 @@ fn stop_monitor(state: tauri::State<'_, AppState>) {
     }
 }
 
+/// Resolves the history store, or explains why there isn't one.
+fn history(state: &tauri::State<'_, AppState>) -> Result<Arc<History>, String> {
+    match (&state.history, &state.history_error) {
+        (Some(h), _) => Ok(Arc::clone(h)),
+        (None, Some(e)) => Err(format!("history is unavailable: {e}")),
+        (None, None) => Err("history is unavailable".into()),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryQuery {
+    host_ids: Vec<String>,
+    /// How far back to read, in seconds. 0 means the whole retention window.
+    span_sec: u64,
+    /// Cap on returned samples *per host*, matching the chart's capacity.
+    per_host: u32,
+}
+
+/// Converts a lookback in seconds to an absolute cutoff. 0 means "everything".
+fn cutoff_ms(span_sec: u64) -> i64 {
+    if span_sec == 0 {
+        0
+    } else {
+        db::now_ms() - (span_sec as i64) * 1000
+    }
+}
+
+/// Runs blocking history work off the async runtime.
+///
+/// Every one of these commands waits on the writer thread and then touches the
+/// disk. A synchronous Tauri command would run on the main thread and freeze the
+/// window; awaiting directly would tie up an async worker for the duration of an
+/// export, which can be millions of rows.
+async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Samples from earlier sessions, so the chart is not blank after a restart.
+#[tauri::command]
+async fn history_since(
+    state: tauri::State<'_, AppState>,
+    query: HistoryQuery,
+) -> Result<Vec<db::Sample>, String> {
+    let h = history(&state)?;
+    let since = cutoff_ms(query.span_sec);
+    let limit = (query.per_host as usize).saturating_mul(query.host_ids.len().max(1));
+
+    blocking(move || {
+        // Without the barrier a read can legitimately miss a sample that was
+        // recorded moments earlier but is still queued.
+        h.flush()?;
+        db::recent(h.path(), &query.host_ids, since, limit)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn history_stats(state: tauri::State<'_, AppState>) -> Result<db::Stats, String> {
+    let h = history(&state)?;
+    blocking(move || {
+        h.flush()?;
+        let mut s = db::stats(h.path())?;
+        s.error = h.last_error();
+        Ok(s)
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    path: String,
+    rows: u64,
+}
+
+/// Writes the history to a timestamped CSV in the user's Downloads folder.
+///
+/// A save-as dialog would need another plugin; a predictable location that
+/// every Windows user already knows is a fair trade for now, and the full path
+/// comes back so the UI can show exactly where it went.
+#[tauri::command]
+async fn export_history(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    span_sec: u64,
+) -> Result<ExportResult, String> {
+    let h = history(&state)?;
+    let dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_local_data_dir())
+        .map_err(|e| e.to_string())?;
+    let dest = dir.join(format!(
+        "brett-net-history-{}.csv",
+        db::timestamp::local_file_stamp()
+    ));
+    let since = cutoff_ms(span_sec);
+
+    blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let rows = db::export_csv(h.path(), &dest, since)?;
+        Ok(ExportResult {
+            path: dest.display().to_string(),
+            rows,
+        })
+    })
+    .await
+}
+
 #[cfg(windows)]
 fn platform_backend() -> icmp::windows::WindowsIcmp {
     icmp::windows::WindowsIcmp
@@ -163,7 +312,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
-            app.manage(AppState::default());
+            // A history database that cannot be opened must not stop the app
+            // from monitoring, so the failure is carried rather than returned.
+            let (history, history_error) =
+                match history_path(app.handle()).and_then(|p| History::open(p).map(Arc::new)) {
+                    Ok(h) => (Some(h), None),
+                    Err(e) => (None, Some(e)),
+                };
+
+            app.manage(AppState {
+                monitor: Mutex::new(None),
+                history,
+                history_error,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -171,7 +332,10 @@ pub fn run() {
             start_monitor,
             stop_monitor,
             load_settings,
-            save_settings
+            save_settings,
+            history_since,
+            history_stats,
+            export_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -52,10 +52,13 @@ export function startMonitor(
   hosts: HostSpec[],
   intervalMs: number,
   timeoutMs: number,
+  retentionDays: number,
 ): Promise<void> {
   // Strip UI-only fields so the wire payload matches the Rust struct exactly.
   const wire = hosts.map(({ id, label, target }) => ({ id, label, target }));
-  return invoke('start_monitor', { args: { hosts: wire, intervalMs, timeoutMs } });
+  return invoke('start_monitor', {
+    args: { hosts: wire, intervalMs, timeoutMs, retentionDays },
+  });
 }
 
 export function stopMonitor(): Promise<void> {
@@ -68,6 +71,57 @@ export interface Settings {
   probeMs: number;
   bucketSec: number;
   spanSec: number;
+  /** Days of ping history kept on disk. */
+  retentionDays: number;
+}
+
+/** One stored sample, as read back from the history database. */
+export interface HistorySample {
+  /** Unix epoch milliseconds. */
+  t: number;
+  hostId: string;
+  rttUs: number | null;
+  status: PingStatus;
+}
+
+export interface HistoryStats {
+  samples: number;
+  bytes: number;
+  oldestMs: number | null;
+  newestMs: number | null;
+  path: string;
+  /** A background write or prune failed; history may be incomplete. */
+  error: string | null;
+}
+
+export interface ExportResult {
+  path: string;
+  rows: number;
+}
+
+/**
+ * Samples from earlier sessions, oldest first.
+ *
+ * @param spanSec how far back to read; 0 means the whole retention window
+ * @param perHost cap on samples returned per host
+ */
+export function historySince(
+  hostIds: string[],
+  spanSec: number,
+  perHost: number,
+): Promise<HistorySample[]> {
+  return invoke<HistorySample[]>('history_since', {
+    query: { hostIds, spanSec, perHost },
+  });
+}
+
+export function historyStats(): Promise<HistoryStats> {
+  return invoke<HistoryStats>('history_stats');
+}
+
+/** Writes a CSV to the Downloads folder. `spanSec` of 0 exports everything. */
+export function exportHistory(spanSec: number): Promise<ExportResult> {
+  return invoke<ExportResult>('export_history', { spanSec });
 }
 
 export function loadSettings(): Promise<Settings | null> {

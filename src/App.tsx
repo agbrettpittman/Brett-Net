@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import {
+  exportHistory,
   hostInfo,
+  historySince,
   loadSettings,
   onPingTick,
   saveSettings,
   startMonitor,
   stopMonitor,
   STATUS_LABEL,
+  type HistorySample,
   type HostInfo,
   type HostSpec,
   type PingStatus,
 } from './lib/ipc';
 import { HostStats, formatMs } from './lib/stats';
+import { latencyMs, toColumns } from './lib/backfill';
 import { SeriesStore } from './lib/series';
 import { seriesStyle } from './lib/palette';
 import {
@@ -44,8 +48,17 @@ const PROBE_RATES = [
   { ms: 5000, label: '5s' },
 ] as const;
 
+/** How long ping history is kept on disk. */
+const RETENTIONS = [
+  { days: 1, label: '1 day' },
+  { days: 3, label: '3 days' },
+  { days: 7, label: '7 days' },
+  { days: 14, label: '14 days' },
+  { days: 30, label: '30 days' },
+] as const;
+
 const TIMEOUT_MS = 2000;
-/** Samples retained per host — an hour at one per second. */
+/** Samples retained per host in memory — an hour at one per second. */
 const HISTORY = 3600;
 /** The chrome re-renders on a timer, not per tick, to keep React off the hot path. */
 const REFRESH_MS = 500;
@@ -56,12 +69,16 @@ export default function App() {
   /** User intent. The Rust monitor is kept in sync with this and `hosts`. */
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Transient confirmation, e.g. where an export landed. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<HostSpec | null>(null);
   /** Gates monitoring and saving until persisted settings have been read. */
   const [loaded, setLoaded] = useState(false);
   const [probeMs, setProbeMs] = useState(1000);
   const [bucketSec, setBucketSec] = useState(5);
   const [spanSec, setSpanSec] = useState(300);
+  const [retentionDays, setRetentionDays] = useState(7);
+  const [exporting, setExporting] = useState(false);
   const [themePref, setThemePref] = useState<ThemePref>(() => readPref(localStorage));
   const [systemDark, setSystemDark] = useState(systemPrefersDark);
   const theme = resolveTheme(themePref, systemDark);
@@ -76,20 +93,78 @@ export default function App() {
     hostInfo().then(setInfo).catch((e: unknown) => setError(String(e)));
   }, []);
 
-  // Restore saved hosts and chart settings before anything starts probing,
-  // otherwise the defaults would be pinged briefly and then replaced.
+  /**
+   * Replays stored samples into the chart and the per-host statistics, so a
+   * restart resumes where it left off rather than starting from a blank canvas.
+   */
+  const restore = useCallback((samples: HistorySample[]) => {
+    for (const col of toColumns(samples, HISTORY)) {
+      store.current.push(col.tSec, col.values);
+    }
+    // Feed the table too, otherwise the chart shows an hour of history beside
+    // an average computed from the last two seconds.
+    for (const s of samples) {
+      let hs = stats.current.get(s.hostId);
+      if (!hs) {
+        hs = new HostStats();
+        stats.current.set(s.hostId, hs);
+      }
+      hs.add({ hostId: s.hostId, rttUs: s.rttUs, status: s.status, from: null });
+      lastStatus.current.set(s.hostId, s.status);
+    }
+  }, []);
+
+  // Restore saved settings, then replay stored samples into the chart, and only
+  // then allow probing to begin. Both orderings are load-bearing: probing early
+  // would ping the defaults and then replace them, and back-filling after a live
+  // tick had landed would push older columns behind newer ones, leaving the x
+  // axis non-monotonic.
   useEffect(() => {
-    loadSettings()
-      .then((s) => {
+    let cancelled = false;
+
+    void (async () => {
+      let restored = DEFAULT_HOSTS;
+      let span = spanSec;
+
+      try {
+        const s = await loadSettings();
         if (s) {
-          if (s.hosts?.length) setHosts(s.hosts);
+          if (s.hosts?.length) {
+            restored = s.hosts;
+            setHosts(s.hosts);
+          }
           if (s.probeMs) setProbeMs(s.probeMs);
           if (typeof s.bucketSec === 'number') setBucketSec(s.bucketSec);
-          if (typeof s.spanSec === 'number') setSpanSec(s.spanSec);
+          if (typeof s.spanSec === 'number') {
+            span = s.spanSec;
+            setSpanSec(s.spanSec);
+          }
+          if (typeof s.retentionDays === 'number') setRetentionDays(s.retentionDays);
         }
-      })
-      .catch((e: unknown) => setError(String(e)))
-      .finally(() => setLoaded(true));
+      } catch (e: unknown) {
+        setError(String(e));
+      }
+
+      try {
+        const samples = await historySince(
+          restored.map((h) => h.id),
+          Math.min(span || HISTORY, HISTORY),
+          HISTORY,
+        );
+        if (!cancelled) restore(samples);
+      } catch {
+        // History is a convenience, not a requirement. If it is unavailable the
+        // chart simply starts empty, and the error surfaces on export instead.
+      }
+
+      if (!cancelled) setLoaded(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Runs once; `spanSec` is only read for its initial value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist on change, debounced so dragging through select options does not
@@ -97,10 +172,10 @@ export default function App() {
   useEffect(() => {
     if (!loaded) return;
     const id = setTimeout(() => {
-      saveSettings({ hosts, probeMs, bucketSec, spanSec }).catch(() => {});
+      saveSettings({ hosts, probeMs, bucketSec, spanSec, retentionDays }).catch(() => {});
     }, 400);
     return () => clearTimeout(id);
-  }, [loaded, hosts, probeMs, bucketSec, spanSec]);
+  }, [loaded, hosts, probeMs, bucketSec, spanSec, retentionDays]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -114,12 +189,7 @@ export default function App() {
         }
         s.add(r);
         lastStatus.current.set(r.hostId, r.status);
-        // Only a genuine reply from the target is a latency point. Timeouts and
-        // TTL-expired replies become gaps in the line.
-        column.set(
-          r.hostId,
-          r.status === 'success' && r.rttUs !== null ? r.rttUs / 1000 : null,
-        );
+        column.set(r.hostId, latencyMs(r.status, r.rttUs));
       }
       store.current.push(tick.t / 1000, column);
     })
@@ -151,14 +221,14 @@ export default function App() {
 
     let cancelled = false;
     for (const h of hosts) store.current.addHost(h.id);
-    startMonitor(hosts, probeMs, TIMEOUT_MS).catch((e: unknown) => {
+    startMonitor(hosts, probeMs, TIMEOUT_MS, retentionDays).catch((e: unknown) => {
       if (!cancelled) setError(String(e));
     });
 
     return () => {
       cancelled = true;
     };
-  }, [hosts, enabled, probeMs, loaded]);
+  }, [hosts, enabled, probeMs, retentionDays, loaded]);
 
   const toggleRun = useCallback(() => {
     setError(null);
@@ -182,6 +252,19 @@ export default function App() {
   const saveHost = useCallback((updated: HostSpec) => {
     setHosts((prev) => prev.map((h) => (h.id === updated.id ? updated : h)));
     setEditing(null);
+  }, []);
+
+  const doExport = useCallback(() => {
+    setExporting(true);
+    setNotice(null);
+    // Everything retained, not just what is on screen: the point of an export
+    // is the history you can no longer see.
+    exportHistory(0)
+      .then(({ path, rows }) => {
+        setNotice(`Exported ${rows.toLocaleString()} samples to ${path}`);
+      })
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => setExporting(false));
   }, []);
 
   const removeHost = useCallback((id: string) => {
@@ -274,12 +357,42 @@ export default function App() {
             onChange={setSpanSec}
             options={SPANS.map((s) => ({ value: s.sec, label: s.label }))}
           />
+          <Select
+            label="Keep"
+            title="How long ping history is kept on disk"
+            value={retentionDays}
+            onChange={setRetentionDays}
+            options={RETENTIONS.map((r) => ({ value: r.days, label: r.label }))}
+          />
+          <button
+            onClick={doExport}
+            disabled={exporting}
+            title="Write all stored history to a CSV in your Downloads folder"
+            className="rounded-md border border-border px-2 py-0.5 transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
         </span>
       </div>
 
       {error && (
         <p className="mx-5 mt-3 shrink-0 rounded-md border border-danger/40 px-3 py-2 font-mono text-xs text-danger">
           {error}
+        </p>
+      )}
+
+      {notice && (
+        <p className="mx-5 mt-3 flex shrink-0 items-start gap-2 rounded-md border border-border px-3 py-2 font-mono text-xs text-text-muted">
+          <span className="min-w-0 flex-1 break-all" data-selectable>
+            {notice}
+          </span>
+          <button
+            onClick={() => setNotice(null)}
+            className="shrink-0 transition-colors hover:text-text"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
         </p>
       )}
 
