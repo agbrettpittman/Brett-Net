@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
+pub mod adapters;
 pub mod asn;
 pub mod db;
 pub mod icmp;
@@ -372,6 +373,11 @@ fn stop_trace(state: tauri::State<'_, AppState>) {
 }
 
 #[tauri::command]
+async fn list_adapters() -> Result<Vec<adapters::Adapter>, String> {
+    blocking(adapters::list).await
+}
+
+#[tauri::command]
 async fn dns_lookup(host: String) -> Result<probe::DnsResult, String> {
     blocking(move || probe::resolve(&host)).await
 }
@@ -537,7 +543,8 @@ pub fn run() {
             stop_trace,
             lookup_asn,
             dns_lookup,
-            scan_ports
+            scan_ports,
+            list_adapters
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

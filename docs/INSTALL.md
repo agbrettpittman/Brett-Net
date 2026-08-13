@@ -155,6 +155,22 @@ appear in the summary underneath, so nothing is lost but the noise.
 
 ---
 
+## Adapters
+
+Everything `ipconfig /all` would tell you, without reading `ipconfig /all`:
+address and subnet, gateway, DNS servers, DHCP server, MAC address, MTU and link
+speed, for each network interface.
+
+Only interfaces that are **up and have an address** are shown, sorted so the one
+carrying your traffic — the one with a default gateway — is first. Tick **Show
+inactive** for the rest; a typical Windows machine has several tunnel and
+virtual adapters sitting idle.
+
+`none` against a field means that interface genuinely has none, which is normal
+— a VPN often has no gateway of its own, and loopback has no hardware address.
+
+---
+
 ## Where your data lives
 
 Both locations survive upgrades — installing a newer version keeps your hosts

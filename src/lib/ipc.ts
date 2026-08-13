@@ -265,6 +265,29 @@ export function scanPorts(
   return invoke('scan_ports', { host, config: { ports, timeoutMs }, onEvent: channel });
 }
 
+/** Mirrors `adapters::Adapter`. */
+export interface Adapter {
+  name: string;
+  description: string;
+  kind: string;
+  status: string;
+  mac: string | null;
+  /** Null where the driver does not report one, e.g. loopback. */
+  mtu: number | null;
+  speedBps: number | null;
+  /** Unicast addresses in CIDR form, e.g. `192.168.1.5/24`. */
+  addresses: string[];
+  gateways: string[];
+  dns: string[];
+  dhcpServer: string | null;
+  /** Up *and* configured — i.e. one this machine is actually using. */
+  active: boolean;
+}
+
+export function listAdapters(): Promise<Adapter[]> {
+  return invoke<Adapter[]>('list_adapters');
+}
+
 /** Human-readable label for a status, used in the UI and tooltips. */
 export const STATUS_LABEL: Record<PingStatus, string> = {
   success: 'OK',

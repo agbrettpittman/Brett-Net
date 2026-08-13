@@ -19,6 +19,12 @@ Installs per-user with no administrator rights, and the installer is under
   label one.
 - **History on disk** — every sample persists to SQLite, so restarting resumes
   the graph instead of starting blank. Configurable retention, and CSV export.
+- **Traceroute** that streams hops as it finds them, names the network behind
+  each public hop, and gives up on a filtered path when you tell it to.
+- **DNS lookup and TCP port checks**, including full-range scans — and
+  *refused* is reported separately from *no answer*, because a refusal proves
+  the host is up.
+- **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
 - **No administrator rights**, for either installing or pinging.
 
 ## Stack
@@ -72,11 +78,18 @@ updater, which ships wired but dormant.
 ```
 src/                    React app
   features/ping/        the latency chart
+  features/path/        traceroute
+  features/dns/         DNS lookup and port checks
+  features/adapters/    local interface configuration
   components/           host entry, editing, theme toggle, update banner
   lib/                  series storage, aggregation, lanes, palette, IPC
 src-tauri/
   src/icmp/             Windows ICMP FFI + backend trait
   src/monitor/          scheduler, DNS cache
   src/db/               history storage, retention, CSV export
+  src/trace/            traceroute over the ICMP FFI
+  src/probe/            name resolution and TCP port checks
+  src/asn/              IP to network-operator lookup
+  src/adapters/         GetAdaptersAddresses FFI
 docs/                   setup, install, and release guides
 ```

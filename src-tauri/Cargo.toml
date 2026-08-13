@@ -33,6 +33,8 @@ windows = { version = "0.62", features = [
   "Win32_System_IO",
   # GetLocalTime, for local-time filenames on exports.
   "Win32_System_SystemInformation",
+  # IF_OPER_STATUS, returned by GetAdaptersAddresses.
+  "Win32_NetworkManagement_Ndis",
 ] }
 
 [profile.release]
