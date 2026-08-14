@@ -31,8 +31,8 @@ Installs per-user with no administrator rights, and the installer is under
 - **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
 - **Live bandwidth per interface** — send and receive rates, session totals, and
   a chart with received above the line and sent below.
-- **Keep awake** — a one-click wake lock, so a long transfer isn't interrupted
-  by the machine sleeping.
+- **Keep awake / keep active** — block sleep, and optionally keep the session
+  from locking, on a timer that releases itself.
 - **No administrator rights**, for either installing or pinging.
 
 ## Stack

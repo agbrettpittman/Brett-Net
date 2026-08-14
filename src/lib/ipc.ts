@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CounterSample } from './traffic';
+import type { AwakeMode } from './keepAwake';
 
 /** Mirrors `icmp::PingStatus`. */
 export type PingStatus =
@@ -309,13 +310,23 @@ export function listAdapters(): Promise<Adapter[]> {
   return invoke<Adapter[]>('list_adapters');
 }
 
+export const KEEP_AWAKE_EXPIRED_EVENT = 'keep-awake://expired';
+
 /**
- * Stops the machine sleeping, or releases the request.
+ * Applies a keep-awake mode, optionally for a limited time.
  *
- * Not persisted anywhere: it lasts until switched off or the app closes.
+ * Not persisted anywhere: it lasts until switched off, until the timer runs
+ * out, or until the app closes.
+ *
+ * @param seconds how long before it releases itself; 0 means no limit
  */
-export function setKeepAwake(on: boolean): Promise<void> {
-  return invoke('set_keep_awake', { on });
+export function setKeepAwake(mode: AwakeMode, seconds: number): Promise<void> {
+  return invoke('set_keep_awake', { mode, seconds });
+}
+
+/** Fires when a timed request runs out, so the UI can drop back to Off. */
+export function onKeepAwakeExpired(handler: () => void): Promise<UnlistenFn> {
+  return listen(KEEP_AWAKE_EXPIRED_EVENT, () => handler());
 }
 
 /** One read of every interface's cumulative byte counters. */

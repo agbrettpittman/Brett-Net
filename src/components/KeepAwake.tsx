@@ -1,81 +1,130 @@
-import { useCallback, useEffect, useState } from 'react';
-import { setKeepAwake } from '../lib/ipc';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import { onKeepAwakeExpired, setKeepAwake } from '../lib/ipc';
+import {
+  AWAKE_DURATIONS,
+  AWAKE_MODES,
+  DEFAULT_AWAKE_SEC,
+  formatRemaining,
+  type AwakeMode,
+} from '../lib/keepAwake';
 
 /**
- * Stops the machine sleeping while something long-running is in flight.
+ * Stops the machine sleeping, and optionally stops it locking.
  *
  * Deliberately not persisted: a wake lock that re-armed itself on the next
  * launch would keep a laptop awake in a bag, and nobody would think to blame a
- * network monitor. It lasts until it is switched off or the app is closed, and
- * the button says so.
+ * network monitor. It lasts until switched off, until the timer runs out, or
+ * until the app closes.
  */
 export function KeepAwake() {
-  const [on, setOn] = useState(false);
+  const [mode, setMode] = useState<AwakeMode>('off');
+  const [seconds, setSeconds] = useState(DEFAULT_AWAKE_SEC);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [remaining, setRemaining] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const toggle = useCallback(() => {
-    const next = !on;
-    // Optimistic, then corrected on failure: the round trip is a channel send
-    // and a Win32 call, so waiting for it would only make the button feel slow.
-    setOn(next);
+  /** Latest request wins, so a slow reply cannot resurrect an old mode. */
+  const request = useRef(0);
+
+  const apply = useCallback((next: AwakeMode, forSeconds: number) => {
+    const ticket = (request.current += 1);
     setError(null);
-    setKeepAwake(next).catch((e: unknown) => {
-      setOn(!next);
+    setMode(next);
+    setExpiresAt(next === 'off' || forSeconds === 0 ? null : Date.now() + forSeconds * 1000);
+
+    setKeepAwake(next, forSeconds).catch((e: unknown) => {
+      if (request.current !== ticket) return;
+      setMode('off');
+      setExpiresAt(null);
       setError(String(e));
     });
-  }, [on]);
+  }, []);
 
-  // Release explicitly on unmount. The process exiting clears it anyway, but
-  // this covers a reload during development leaving a lock behind.
+  // The backend owns the deadline and says when it lapses, rather than the UI
+  // racing its own timer — a webview in a minimised window can be throttled,
+  // and a wake lock outliving its countdown is the one failure that matters.
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    onKeepAwakeExpired(() => {
+      request.current += 1;
+      setMode('off');
+      setExpiresAt(null);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    if (expiresAt === null) {
+      setRemaining('');
+      return;
+    }
+    const show = () => setRemaining(formatRemaining(expiresAt - Date.now()));
+    show();
+    const id = setInterval(show, 1000);
+    return () => clearInterval(id);
+  }, [expiresAt]);
+
+  // Release on unmount. The process exiting clears it anyway, but this covers a
+  // hot reload during development leaving a lock behind.
   useEffect(() => {
     return () => {
-      setKeepAwake(false).catch(() => {});
+      setKeepAwake('off', 0).catch(() => {});
     };
   }, []);
 
+  const active = mode !== 'off';
+  const hint = AWAKE_MODES.find((m) => m.value === mode)?.hint ?? '';
+
   return (
-    <button
-      onClick={toggle}
-      aria-pressed={on}
-      title={
-        error ??
-        (on
-          ? 'Keeping this PC awake. Click to stop — it also stops when you close Brett-Net.'
-          : 'Stop this PC sleeping. The screen can still turn off; only sleep is blocked.')
-      }
-      className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
-        error
-          ? 'border-danger/50 text-danger'
-          : on
-            ? 'border-accent text-accent'
-            : 'border-border text-text-muted hover:bg-surface-2 hover:text-text'
-      }`}
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
+    <span className="flex items-center gap-1.5 text-xs">
+      <select
+        value={mode}
+        onChange={(e) => apply(e.target.value as AwakeMode, seconds)}
+        title={error ?? hint}
+        aria-label="Keep this PC awake"
+        className={`rounded-md border bg-surface px-1.5 py-0.5 outline-none focus:border-accent ${
+          error ? 'border-danger/60 text-danger' : active ? 'border-accent text-accent' : 'border-border text-text-muted'
+        }`}
       >
-        {/* An open eye when held, a closed one when not. */}
-        {on ? (
-          <>
-            <path d="M1 8s2.6-4.2 7-4.2S15 8 15 8s-2.6 4.2-7 4.2S1 8 1 8Z" />
-            <circle cx="8" cy="8" r="1.8" />
-          </>
-        ) : (
-          <>
-            <path d="M1.6 6.2S3.9 10.4 8 10.4s6.4-4.2 6.4-4.2" />
-            <path d="M3.4 8.9 2 10.7M8 10.4v2M12.6 8.9 14 10.7" />
-          </>
-        )}
-      </svg>
-      {on ? 'Awake' : 'Keep awake'}
-    </button>
+        {AWAKE_MODES.map((m) => (
+          <option key={m.value} value={m.value}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+
+      {active && (
+        <select
+          value={seconds}
+          onChange={(e) => {
+            // Changing the limit restarts it, which is the only reading of
+            // "4 hours" that is not a lie about when it will stop.
+            const next = Number(e.target.value);
+            setSeconds(next);
+            apply(mode, next);
+          }}
+          title="How long before this releases itself"
+          aria-label="Keep awake for"
+          className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-text-muted outline-none focus:border-accent"
+        >
+          {AWAKE_DURATIONS.map((d) => (
+            <option key={d.sec} value={d.sec}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {active && remaining && (
+        <span className="font-mono text-text-muted" title="Time left before it releases itself">
+          {remaining}
+        </span>
+      )}
+    </span>
   );
 }

@@ -24,6 +24,10 @@ use monitor::{HostSpec, MonitorConfig, MonitorHandle};
 /// Channel the frontend subscribes to for batched ping results.
 pub const PING_TICK_EVENT: &str = "ping://tick";
 
+/// Emitted when a timed keep-awake request runs out, so the UI can drop back to
+/// Off without polling for it.
+pub const KEEP_AWAKE_EXPIRED_EVENT: &str = "keep-awake://expired";
+
 /// How long a resolved hostname is trusted before re-resolving.
 const DNS_TTL: Duration = Duration::from_secs(300);
 
@@ -389,8 +393,12 @@ async fn list_adapters() -> Result<Vec<adapters::Adapter>, String> {
 /// itself on next launch would keep a laptop awake in a bag, and the user would
 /// have no reason to suspect this app.
 #[tauri::command]
-fn set_keep_awake(state: tauri::State<'_, AppState>, on: bool) -> Result<(), String> {
-    state.awake.set(on).map(|_| ())
+fn set_keep_awake(
+    state: tauri::State<'_, AppState>,
+    mode: awake::Mode,
+    seconds: u64,
+) -> Result<(), String> {
+    state.awake.set(mode, seconds).map(|_| ())
 }
 
 /// One read of every interface's byte counters.
@@ -553,7 +561,12 @@ pub fn run() {
                 history_error,
                 trace_cancel: Mutex::new(None),
                 asn: Arc::new(AsnCache::default()),
-                awake: KeepAwake::new(),
+                awake: {
+                    let handle = app.handle().clone();
+                    KeepAwake::new(move || {
+                        let _ = handle.emit(KEEP_AWAKE_EXPIRED_EVENT, ());
+                    })
+                },
             });
             Ok(())
         })

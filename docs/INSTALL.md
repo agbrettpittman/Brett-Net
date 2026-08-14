@@ -49,11 +49,33 @@ keeps running until you close it.
 | **Keep** | How long history is stored on disk. |
 | **Export CSV** | Writes everything stored to your Downloads folder. |
 
-**Keep awake** (top right, next to the theme buttons) stops the PC going to
-sleep — useful during a long download or a transfer you don't want interrupted.
-The screen can still turn off; only sleep is blocked. It stays on until you
-click it again or close Brett-Net, and it is deliberately **not** remembered
-between runs, so it can't quietly keep a laptop awake in a bag.
+**Keeping the PC awake.** Top right, next to the theme buttons, there's a
+dropdown with three settings — useful during a long download or a transfer you
+don't want interrupted.
+
+| Setting | What it does |
+|---|---|
+| **Off** | Normal power behaviour. |
+| **Keep awake** | Stops the PC sleeping. The screen can still switch off, and the session can still lock. |
+| **Keep active** | Also stops the session going idle, so it doesn't lock either. |
+
+**Keep awake is enough for a download.** Locking doesn't pause anything —
+transfers, copies and background jobs all carry on behind the lock screen.
+Sleeping is the thing that interrupts them, and that's what this blocks.
+
+**Keep active** is for when you need the session to stay unlocked. It works by
+sending a single harmless keystroke — F15, a key no physical keyboard has, so
+nothing is bound to it and it can't type anything. It only fires after a full
+minute with no input of your own, so it never interferes while you're using the
+machine; the moment you touch the keyboard or mouse it goes quiet again. Once
+the PC has actually locked it can't do anything, so it prevents locking rather
+than undoing it.
+
+**There's always a time limit.** It defaults to 5 minutes and goes up to 8
+hours, with **No limit** last if you really want it. When the timer runs out it
+releases itself, and the remaining time is shown beside the dropdown. Nothing is
+remembered between runs either — so it can't quietly keep a laptop awake in a
+bag.
 
 **Adding hosts.** Click **+ Add hosts** for a small spreadsheet with four
 columns:
