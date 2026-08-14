@@ -49,6 +49,12 @@ keeps running until you close it.
 | **Keep** | How long history is stored on disk. |
 | **Export CSV** | Writes everything stored to your Downloads folder. |
 
+**Keep awake** (top right, next to the theme buttons) stops the PC going to
+sleep — useful during a long download or a transfer you don't want interrupted.
+The screen can still turn off; only sleep is blocked. It stays on until you
+click it again or close Brett-Net, and it is deliberately **not** remembered
+between runs, so it can't quietly keep a laptop awake in a bag.
+
 **Adding hosts.** Click **+ Add hosts** for a small spreadsheet with four
 columns:
 

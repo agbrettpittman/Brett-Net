@@ -31,6 +31,8 @@ Installs per-user with no administrator rights, and the installer is under
 - **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
 - **Live bandwidth per interface** — send and receive rates, session totals, and
   a chart with received above the line and sent below.
+- **Keep awake** — a one-click wake lock, so a long transfer isn't interrupted
+  by the machine sleeping.
 - **No administrator rights**, for either installing or pinging.
 
 ## Stack
@@ -86,8 +88,8 @@ src/                    React app
   features/ping/        the latency chart
   features/path/        traceroute
   features/dns/         DNS lookup and port checks
-  features/adapters/    local interface configuration
-  components/           host grid, editing, theme toggle, update banner
+  features/adapters/    interface configuration and live bandwidth
+  components/           host grid, editing, theme toggle, keep awake, update banner
   lib/                  series storage, aggregation, lanes, palette, CSV grid, IPC
 src-tauri/
   src/icmp/             Windows ICMP FFI + backend trait
@@ -97,6 +99,7 @@ src-tauri/
   src/probe/            name resolution and TCP port checks
   src/asn/              IP to network-operator lookup
   src/adapters/         GetAdaptersAddresses FFI
+  src/awake/            SetThreadExecutionState, the keep-awake lock
   src/traffic/          GetIfTable2 FFI, per-interface byte counters
 docs/                   setup, install, and release guides
 ```

@@ -8,6 +8,7 @@ import {
   THEME_KEY,
   type ThemePref,
 } from './lib/theme';
+import { KeepAwake } from './components/KeepAwake';
 import { ThemeToggle } from './components/ThemeToggle';
 import { UpdateBanner } from './components/UpdateBanner';
 import { PingView } from './features/ping/PingView';
@@ -84,6 +85,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-text-muted">{info ? `v${info.appVersion}` : ''}</span>
+          <KeepAwake />
           <ThemeToggle value={themePref} onChange={changeTheme} />
         </div>
       </header>

@@ -7,6 +7,7 @@ use tauri::{Emitter, Manager};
 
 pub mod adapters;
 pub mod asn;
+pub mod awake;
 pub mod db;
 pub mod icmp;
 pub mod monitor;
@@ -15,6 +16,7 @@ pub mod trace;
 pub mod traffic;
 
 use asn::AsnCache;
+use awake::KeepAwake;
 use db::History;
 use monitor::dns::{DnsCache, SystemResolver};
 use monitor::{HostSpec, MonitorConfig, MonitorHandle};
@@ -37,6 +39,9 @@ struct AppState {
     trace_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Network names for hop addresses, kept for the life of the process.
     asn: Arc<AsnCache>,
+    /// Owns the thread holding any wake lock. Never rebuilt — the lock belongs
+    /// to that thread and would be lost with it.
+    awake: KeepAwake,
 }
 
 #[derive(Serialize)]
@@ -378,6 +383,16 @@ async fn list_adapters() -> Result<Vec<adapters::Adapter>, String> {
     blocking(adapters::list).await
 }
 
+/// Stops the machine sleeping while something long-running is in flight.
+///
+/// Not persisted across restarts on purpose: a wake lock that silently re-armed
+/// itself on next launch would keep a laptop awake in a bag, and the user would
+/// have no reason to suspect this app.
+#[tauri::command]
+fn set_keep_awake(state: tauri::State<'_, AppState>, on: bool) -> Result<(), String> {
+    state.awake.set(on).map(|_| ())
+}
+
 /// One read of every interface's byte counters.
 ///
 /// Polled rather than pushed: it is a single cheap call, and leaving the timing
@@ -538,6 +553,7 @@ pub fn run() {
                 history_error,
                 trace_cancel: Mutex::new(None),
                 asn: Arc::new(AsnCache::default()),
+                awake: KeepAwake::new(),
             });
             Ok(())
         })
@@ -556,7 +572,8 @@ pub fn run() {
             dns_lookup,
             scan_ports,
             list_adapters,
-            interface_counters
+            interface_counters,
+            set_keep_awake
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

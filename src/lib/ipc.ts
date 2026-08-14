@@ -309,6 +309,15 @@ export function listAdapters(): Promise<Adapter[]> {
   return invoke<Adapter[]>('list_adapters');
 }
 
+/**
+ * Stops the machine sleeping, or releases the request.
+ *
+ * Not persisted anywhere: it lasts until switched off or the app closes.
+ */
+export function setKeepAwake(on: boolean): Promise<void> {
+  return invoke('set_keep_awake', { on });
+}
+
 /** One read of every interface's cumulative byte counters. */
 export function interfaceCounters(): Promise<CounterSample> {
   return invoke<CounterSample>('interface_counters');
