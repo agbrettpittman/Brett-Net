@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="plate" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#242A36"/>
+      <stop offset="55%" stop-color="#161A22"/>
+      <stop offset="100%" stop-color="#0D1016"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M256 20 L466 140 L466 372 L256 492 L46 372 L46 140 Z"
+        fill="url(#plate)" stroke="#39404F" stroke-width="12" stroke-linejoin="round"/>
+
+  <!-- Two segments rather than one line behind the letter: a single line would
+       show through the counters of the B as stray green crumbs. -->
+  <path d="M64 256 h30 l16 -46 l20 92 l14 -46 h12 M358 256 h86"
+        fill="none" stroke="#3DFF9E" stroke-width="18"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(256 256) scale(0.8) translate(-256 -256)">
+    <!-- Drawn twice: a wide stroke in the plate colour cuts a clean gap around
+         the letter, then the letter itself on top. -->
+    <path d="M168 140 H262 A50 50 0 0 1 262 240 H168 M168 240 H278 A66 66 0 0 1 278 372 H168 M168 140 V372"
+          fill="none" stroke="#14181F" stroke-width="74"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M168 140 H262 A50 50 0 0 1 262 240 H168 M168 240 H278 A66 66 0 0 1 278 372 H168 M168 140 V372"
+          fill="none" stroke="#FFB020" stroke-width="46"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
