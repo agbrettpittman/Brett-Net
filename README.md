@@ -15,8 +15,12 @@ Installs per-user with no administrator rights, and the installer is under
 - **Failures are visible, not absent.** A host that stops replying drops to a
   dashed lane below the chart, stacked so several outages never overlap, with a
   solid connector marking exactly when it failed and recovered.
-- **Bulk host entry** — paste IPs, hostnames, or CIDR ranges; `Name=target` to
-  label one.
+- **Bulk host entry as a grid** — host, name, colour and TCP port in four
+  columns, so a list pastes straight in from Excel or a CSV, and copies back out
+  the same way. CIDR ranges expand.
+- **TCP probe mode per host** — where ICMP is filtered, graph a host by opening
+  a TCP port instead. A refusal is reported as its own state, since it proves
+  the host is up.
 - **History on disk** — every sample persists to SQLite, so restarting resumes
   the graph instead of starting blank. Configurable retention, and CSV export.
 - **Traceroute** that streams hops as it finds them, names the network behind
@@ -81,8 +85,8 @@ src/                    React app
   features/path/        traceroute
   features/dns/         DNS lookup and port checks
   features/adapters/    local interface configuration
-  components/           host entry, editing, theme toggle, update banner
-  lib/                  series storage, aggregation, lanes, palette, IPC
+  components/           host grid, editing, theme toggle, update banner
+  lib/                  series storage, aggregation, lanes, palette, CSV grid, IPC
 src-tauri/
   src/icmp/             Windows ICMP FFI + backend trait
   src/monitor/          scheduler, DNS cache

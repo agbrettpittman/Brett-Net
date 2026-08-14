@@ -49,12 +49,43 @@ keeps running until you close it.
 | **Keep** | How long history is stored on disk. |
 | **Export CSV** | Writes everything stored to your Downloads folder. |
 
-**Adding hosts.** Click **+ Add hosts** and paste a list — IPs, hostnames, or a
-CIDR range like `192.168.1.0/24`. Commas, spaces, and new lines all work. Write
-`Name=target` to label one, e.g. `Gateway=192.168.1.1`.
+**Adding hosts.** Click **+ Add hosts** for a small spreadsheet with four
+columns:
 
-**Editing.** Click a host's name in the table to change its name, target, or
-colour. Click ✕ to remove it.
+| Column | Meaning |
+|---|---|
+| **Host** | An IP, a hostname, or a CIDR range like `192.168.1.0/24`, which expands to every address in it. The only required column. |
+| **Name** | What to call it. Defaults to the host. |
+| **Colour** | A hex colour like `#4f8ef7`, or click the swatch to pick one. Blank picks one for you. |
+| **TCP port** | Leave empty to ping. Fill it in to check that port instead — see *When ping is blocked*, below. |
+
+Type across it with **Comma** or **Tab** to move between boxes, and **Enter** to
+drop down a row. A new blank row appears as you fill the last one.
+
+**Pasting a list is the fast way.** Copy a block of cells straight out of Excel
+and paste it in, or open a CSV in Notepad and paste that — either works, and a
+header row like `host,name,color,port` is recognised and skipped. Whatever cell
+you paste into is where the block starts, so you can paste just a column of
+names into the Name field if that is all you have. A plain list of addresses,
+one per line, still works exactly as before.
+
+**Sharing a list.** **Copy hosts** puts your whole list on the clipboard in that
+same four-column CSV, ready to paste into Excel or send to a colleague who can
+paste it straight back into their own grid.
+
+**Editing.** Click a host's name in the table to change its name, target,
+colour, or how it is probed. Click ✕ to remove it.
+
+**When ping is blocked.** Some networks and most VPNs drop ICMP, which makes
+every host look permanently down. Edit the host and switch **Probe with** from
+*Ping* to *TCP port* — it opens a connection to that port instead, and graphs
+how long the handshake took. Those rows are marked `TCP 443` in the table.
+
+Two things to know. A handshake is slower than a ping on the same path, so a TCP
+row sits above the others on the chart; that is the measurement, not the network.
+And if the port turns out to have nothing listening, the row reads **Refused —
+host is up** in amber rather than red: the check failed, but you have learned the
+machine is alive, and it is usually a sign to pick a different port.
 
 **Zooming.** Drag across the chart to zoom in. Double-click, or use **Reset
 zoom**, to go back to following live data.
@@ -192,7 +223,8 @@ To move your hosts to another machine, copy `settings.json` across.
 
 **Every host shows as down, immediately.** Some networks and most VPNs block
 ICMP echo entirely. Try `ping 8.8.8.8` in a terminal — if that fails too, it is
-the network, not Brett-Net.
+the network, not Brett-Net. Switch those hosts to **TCP port** probing, above,
+and the graph works anyway.
 
 **One host is always slow but others are fine.** Many routers and public DNS
 servers deprioritise ICMP, so a high ping to `8.8.8.8` does not necessarily mean

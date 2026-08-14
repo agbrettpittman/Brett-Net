@@ -17,6 +17,8 @@ import { HostStats, formatMs } from '../../lib/stats';
 import { latencyMs, toColumns } from '../../lib/backfill';
 import { SeriesStore } from '../../lib/series';
 import { seriesStyle } from '../../lib/palette';
+import { hostKey, probeBadge } from '../../lib/probeMode';
+import { toCsv } from '../../lib/grid';
 import type { Theme } from '../../lib/theme';
 import { AddHosts } from '../../components/AddHosts';
 import { EditHost } from '../../components/EditHost';
@@ -236,10 +238,27 @@ export function PingView({ theme }: { theme: Theme }) {
 
   const addHosts = useCallback((added: HostSpec[]) => {
     setHosts((prev) => {
-      const seen = new Set(prev.map((h) => h.target.toLowerCase()));
-      return [...prev, ...added.filter((h) => !seen.has(h.target.toLowerCase()))];
+      const seen = new Set(prev.map(hostKey));
+      return [...prev, ...added.filter((h) => !seen.has(hostKey(h)))];
     });
   }, []);
+
+  /**
+   * Puts the host list on the clipboard in the same four columns the add grid
+   * accepts, so a list can be handed to someone else and pasted straight in.
+   */
+  const copyHosts = useCallback(() => {
+    setNotice(null);
+    const csv = toCsv(hosts);
+    if (!navigator.clipboard) {
+      setError('This build cannot reach the clipboard.');
+      return;
+    }
+    navigator.clipboard.writeText(csv).then(
+      () => setNotice(`Copied ${hosts.length} host${hosts.length === 1 ? '' : 's'} as CSV.`),
+      (e: unknown) => setError(`Could not copy to the clipboard: ${String(e)}`),
+    );
+  }, [hosts]);
 
   const saveHost = useCallback((updated: HostSpec) => {
     setHosts((prev) => prev.map((h) => (h.id === updated.id ? updated : h)));
@@ -396,6 +415,7 @@ export function PingView({ theme }: { theme: Theme }) {
               const status = lastStatus.current.get(h.id);
               const auto = seriesStyle(i, theme);
               const style = h.color ? { stroke: h.color } : auto;
+              const badge = probeBadge(h);
               return (
                 <tr key={h.id} className="group border-t border-border">
                   <td className="py-2">
@@ -411,8 +431,18 @@ export function PingView({ theme }: { theme: Theme }) {
                       </button>
                     </span>
                   </td>
-                  <td className="py-2 font-mono text-text-muted" data-selectable>
-                    {h.target}
+                  <td className="py-2 font-mono text-text-muted">
+                    <span data-selectable>{h.target}</span>
+                    {/* A TCP-probed host measures a handshake rather than a
+                        ping, so it must not look like every other row. */}
+                    {badge && (
+                      <span
+                        className="ml-1.5 rounded border border-border px-1 py-px text-[10px] tracking-tight"
+                        title="Probed by opening a TCP connection, not by pinging"
+                      >
+                        {badge}
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 text-right font-mono">{formatMs(s?.last ?? null)}</td>
                   <td className="py-2 text-right font-mono">{formatMs(s?.avg ?? null)}</td>
@@ -436,6 +466,14 @@ export function PingView({ theme }: { theme: Theme }) {
         </table>
 
         <AddHosts onAdd={addHosts} />
+        <button
+          onClick={copyHosts}
+          disabled={hosts.length === 0}
+          title="Copy the host list to the clipboard as CSV, ready to paste into Excel or send to someone"
+          className="ml-2 mt-3 rounded-md border border-border px-2.5 py-1 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-40"
+        >
+          Copy hosts
+        </button>
       </section>
 
       {editing && (
