@@ -1,5 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type { CounterSample } from './traffic';
 
 /** Mirrors `icmp::PingStatus`. */
 export type PingStatus =
@@ -285,6 +286,8 @@ export function scanPorts(
 
 /** Mirrors `adapters::Adapter`. */
 export interface Adapter {
+  /** Stable key, matching `InterfaceCounters.luid`, for joining live counters. */
+  luid: string;
   name: string;
   description: string;
   kind: string;
@@ -304,6 +307,11 @@ export interface Adapter {
 
 export function listAdapters(): Promise<Adapter[]> {
   return invoke<Adapter[]>('list_adapters');
+}
+
+/** One read of every interface's cumulative byte counters. */
+export function interfaceCounters(): Promise<CounterSample> {
+  return invoke<CounterSample>('interface_counters');
 }
 
 /** Human-readable label for a status, used in the UI and tooltips. */

@@ -4,6 +4,7 @@ import type { Adapter } from './ipc';
 
 function adapter(name: string, active: boolean, gateways: string[] = []): Adapter {
   return {
+    luid: name,
     name,
     description: name,
     kind: 'Ethernet',

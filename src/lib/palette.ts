@@ -40,6 +40,42 @@ export function seriesStyle(index: number, theme: string): SeriesStyle {
 /** The light-theme ramp, for offering colour choices in the host editor. */
 export const PALETTE_PREVIEW: string[] = LIGHT;
 
+/** A hue split into two lightnesses, one per traffic direction. */
+export interface DirectionalStyle {
+  received: string;
+  sent: string;
+}
+
+/**
+ * One hue per interface, with lightness encoding direction: sent is the lighter
+ * of the pair, received the darker.
+ *
+ * This means an interface's two bands are recognisably the same colour family
+ * while the direction is readable on its own, without relying on which side of
+ * the zero line a band sits.
+ *
+ * **The lightnesses are relative to the theme, not absolute.** Splitting the
+ * range at the midpoint — light half for one direction, dark half for the other
+ * — is the obvious approach and fails at both ends: near-white washes out on the
+ * light theme's background, and near-black disappears on the dark one. Holding
+ * both inside the theme's own usable band keeps the pair distinguishable *and*
+ * visible.
+ *
+ * Inverting the colour rather than its lightness fails differently: inverting
+ * the channels of a blue gives orange, so the two directions would no longer
+ * read as one interface.
+ */
+export function directionalStyle(index: number, theme: string): DirectionalStyle {
+  const hue = HUES[index % HUES.length]!;
+  const isDark = theme === 'dark';
+  return {
+    received: `oklch(${isDark ? 58 : 46}% 0.15 ${hue})`,
+    // Slightly less chroma: at high lightness a saturated hue drifts out of
+    // sRGB and gets clamped, which shifts it away from its own darker half.
+    sent: `oklch(${isDark ? 84 : 76}% 0.12 ${hue})`,
+  };
+}
+
 /** Colours for chart chrome, matching the CSS token values per theme. */
 export function chartTheme(theme: string) {
   const dark = theme === 'dark';

@@ -12,6 +12,10 @@ pub mod windows;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Adapter {
+    /// Stable key, matching [`crate::traffic::InterfaceCounters::luid`], so
+    /// live byte counters can be joined onto the right interface. Hex text
+    /// rather than a number — see that field for why.
+    pub luid: String,
     /// What Windows shows in Network Connections, e.g. `Wi-Fi`.
     pub name: String,
     /// The hardware, e.g. `Intel(R) Wi-Fi 6E AX211 160MHz`.

@@ -190,7 +190,37 @@ appear in the summary underneath, so nothing is lost but the noise.
 
 Everything `ipconfig /all` would tell you, without reading `ipconfig /all`:
 address and subnet, gateway, DNS servers, DHCP server, MAC address, MTU and link
-speed, for each network interface.
+speed, for each network interface — plus **how much is flowing through each one
+right now**.
+
+Every interface shows a live rate (`↓` received, `↑` sent) and a running total
+for this session. Click an interface to chart it: received above the line, sent
+below, so a big upload can't hide underneath a big download.
+
+**Stack all** charts every visible interface at once instead, one colour per
+interface, stacked so the top of the shape is your machine's total. Useful when
+traffic could be going out over more than one route — a VPN and the physical
+adapter, say — and you want to see which one is carrying it.
+
+**Reading the colours.** Each interface gets one hue, and the two directions are
+the same hue at different lightness: **the lighter shade is always sent.** The
+two-tone swatch on each card shows that interface's pair, dark over light, the
+same way round as the chart.
+
+Two things worth knowing about the numbers:
+
+- **Rates are in bits per second, totals in bytes.** That's deliberate, not
+  inconsistent — a link speed is quoted in bits, so `28 Mbps on a 433 Mbps link`
+  compares directly, while *how much have I used* is a question about bytes.
+  Divide by 8 to convert.
+- **Totals count from when you opened Brett-Net**, not since the machine booted,
+  and they keep counting while you're on another tab. Closing the app resets
+  them.
+
+This measures traffic **leaving this machine**, which is not the same as your
+internet connection's load — everything else on the network is invisible here.
+It answers "am *I* the one saturating the link", which is usually the first
+thing worth ruling out.
 
 Only interfaces that are **up and have an address** are shown, sorted so the one
 carrying your traffic — the one with a default gateway — is first. Tick **Show

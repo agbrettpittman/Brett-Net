@@ -12,6 +12,7 @@ pub mod icmp;
 pub mod monitor;
 pub mod probe;
 pub mod trace;
+pub mod traffic;
 
 use asn::AsnCache;
 use db::History;
@@ -377,6 +378,16 @@ async fn list_adapters() -> Result<Vec<adapters::Adapter>, String> {
     blocking(adapters::list).await
 }
 
+/// One read of every interface's byte counters.
+///
+/// Polled rather than pushed: it is a single cheap call, and leaving the timing
+/// to the caller keeps this side stateless — the rates and running totals are
+/// derived in the frontend, which is where they are drawn.
+#[tauri::command]
+async fn interface_counters() -> Result<traffic::CounterSample, String> {
+    blocking(traffic::sample).await
+}
+
 #[tauri::command]
 async fn dns_lookup(host: String) -> Result<probe::DnsResult, String> {
     blocking(move || probe::resolve(&host)).await
@@ -544,7 +555,8 @@ pub fn run() {
             lookup_asn,
             dns_lookup,
             scan_ports,
-            list_adapters
+            list_adapters,
+            interface_counters
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

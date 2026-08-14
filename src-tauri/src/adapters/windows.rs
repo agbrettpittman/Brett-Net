@@ -82,6 +82,8 @@ unsafe fn collect(head: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<Adapter> {
         let addresses = unsafe { unicast_addresses(a) };
 
         out.push(Adapter {
+            // SAFETY: reading the union's integer view, which is always valid.
+            luid: crate::traffic::luid_key(unsafe { a.Luid.Value }),
             name: unsafe { wide_string(a.FriendlyName.0) },
             description: unsafe { wide_string(a.Description.0) },
             kind: interface_kind(a.IfType),

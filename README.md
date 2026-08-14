@@ -29,6 +29,8 @@ Installs per-user with no administrator rights, and the installer is under
   *refused* is reported separately from *no answer*, because a refusal proves
   the host is up.
 - **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
+- **Live bandwidth per interface** — send and receive rates, session totals, and
+  a chart with received above the line and sent below.
 - **No administrator rights**, for either installing or pinging.
 
 ## Stack
@@ -95,5 +97,6 @@ src-tauri/
   src/probe/            name resolution and TCP port checks
   src/asn/              IP to network-operator lookup
   src/adapters/         GetAdaptersAddresses FFI
+  src/traffic/          GetIfTable2 FFI, per-interface byte counters
 docs/                   setup, install, and release guides
 ```

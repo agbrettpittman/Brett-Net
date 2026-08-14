@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { seriesStyle } from './palette';
+import { directionalStyle, seriesStyle } from './palette';
 
 describe('seriesStyle', () => {
   it('gives the first ten hosts distinct solid colours', () => {
@@ -46,5 +46,60 @@ describe('seriesStyle', () => {
   it('never returns undefined for a large index', () => {
     const s = seriesStyle(137, 'dark');
     expect(s.stroke).toMatch(/^oklch\(/);
+  });
+});
+
+describe('directionalStyle', () => {
+  const parse = (c: string) => {
+    const m = /oklch\(([\d.]+)% ([\d.]+) ([\d.]+)\)/.exec(c)!;
+    return { l: Number(m[1]), c: Number(m[2]), h: Number(m[3]) };
+  };
+
+  it('gives both directions of an interface the same hue', () => {
+    // The point of the scheme: two bands, recognisably one interface.
+    for (const theme of ['light', 'dark']) {
+      for (let i = 0; i < 12; i++) {
+        const s = directionalStyle(i, theme);
+        expect(parse(s.received).h, `${theme} ${i}`).toBe(parse(s.sent).h);
+      }
+    }
+  });
+
+  it('makes sent the lighter of the pair, in both themes', () => {
+    for (const theme of ['light', 'dark']) {
+      const s = directionalStyle(0, theme);
+      expect(parse(s.sent).l, theme).toBeGreaterThan(parse(s.received).l);
+    }
+  });
+
+  it('separates the pair enough to tell them apart', () => {
+    for (const theme of ['light', 'dark']) {
+      const s = directionalStyle(3, theme);
+      expect(parse(s.sent).l - parse(s.received).l, theme).toBeGreaterThanOrEqual(20);
+    }
+  });
+
+  it('keeps both inside the theme\u2019s visible band rather than at the extremes', () => {
+    // Near-white vanishes on the light background and near-black on the dark
+    // one, which is why the split is not simply the midpoint of the range.
+    const lightTheme = directionalStyle(0, 'light');
+    expect(parse(lightTheme.sent).l).toBeLessThan(85);
+    const darkTheme = directionalStyle(0, 'dark');
+    expect(parse(darkTheme.received).l).toBeGreaterThan(40);
+  });
+
+  it('gives adjacent interfaces clearly different hues', () => {
+    for (let i = 0; i < 9; i++) {
+      const a = parse(directionalStyle(i, 'light').received).h;
+      const b = parse(directionalStyle(i + 1, 'light').received).h;
+      const d = Math.abs(a - b);
+      expect(Math.min(d, 360 - d)).toBeGreaterThanOrEqual(60);
+    }
+  });
+
+  it('wraps rather than returning undefined for a large index', () => {
+    const s = directionalStyle(137, 'dark');
+    expect(s.received).toMatch(/^oklch\(/);
+    expect(s.sent).toMatch(/^oklch\(/);
   });
 });
