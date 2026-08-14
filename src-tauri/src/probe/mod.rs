@@ -5,11 +5,13 @@
 //! fallback for a host that blocks ICMP entirely — the single risk that would
 //! otherwise gut the ping graph on a corporate network.
 
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+use crate::icmp::{EchoOutcome, PingBackend, PingStatus};
 
 /// Ports offered as a starting point. Deliberately short — a full scan is a
 /// different tool, and looks far more like an attack to anything watching.
@@ -250,10 +252,61 @@ pub fn sanitise_ports(ports: &[u16]) -> Vec<u16> {
     out
 }
 
+/// Monitors a host by opening a TCP connection instead of pinging it.
+///
+/// This is the answer when a network filters ICMP: a host that never replies to
+/// a ping still completes a handshake on a port it is serving, so the latency
+/// chart keeps working. It plugs into the same scheduler as the ICMP backend.
+///
+/// **The two are not directly comparable.** A handshake is a round trip *plus*
+/// whatever the far end takes to accept, so TCP readings sit above ICMP ones on
+/// the same path. Mixing modes on one chart compares unlike things, which is why
+/// the host table shows which mode each row uses.
+///
+/// Each probe closes its connection, which leaves a local socket in `TIME_WAIT`
+/// for a couple of minutes. That is one socket per probe: fine at a host or two
+/// once a second, but a dozen TCP hosts at 250 ms would hold thousands at a
+/// time, so a slower rate is the right call for a list of them.
+pub struct TcpBackend {
+    pub port: u16,
+}
+
+impl PingBackend for TcpBackend {
+    /// `ttl` is ignored: setting a per-connection TTL needs a raw socket option
+    /// that `std` does not expose, and traceroute — the only caller that varies
+    /// it — always uses ICMP.
+    fn echo(&self, target: Ipv4Addr, _ttl: u8, timeout: Duration) -> EchoOutcome {
+        let ip = IpAddr::V4(target);
+        let result = check_port(ip, self.port, timeout);
+        // Microseconds, to match what the ICMP backend measures. Saturating
+        // rather than wrapping: a wait long enough to overflow would otherwise
+        // come back as a suspiciously fast reply.
+        let rtt_us = result
+            .ms
+            .map(|ms| (ms * 1000.0).clamp(0.0, u32::MAX as f64) as u32);
+
+        let (status, rtt_us) = match result.state {
+            PortState::Open => (PingStatus::Success, rtt_us),
+            // The host answered — it is demonstrably up — but the check it was
+            // asked to make failed, so this is not graphed as a latency sample.
+            // Its own status keeps it distinguishable from a host that is down.
+            PortState::Refused => (PingStatus::Refused, rtt_us),
+            PortState::Filtered => (PingStatus::TimedOut, None),
+        };
+
+        EchoOutcome {
+            status,
+            rtt_us,
+            from: Some(ip),
+            raw_status: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, TcpListener};
+    use std::net::TcpListener;
 
     #[test]
     fn sanitise_drops_port_zero_and_duplicates() {
@@ -496,5 +549,53 @@ mod tests {
     #[test]
     fn an_unresolvable_name_is_an_error() {
         assert!(resolve("nope.invalid").is_err());
+    }
+
+    #[test]
+    fn tcp_backend_reports_a_listening_port_as_a_successful_probe() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let backend = TcpBackend {
+            port: listener.local_addr().unwrap().port(),
+        };
+
+        let out = backend.echo(Ipv4Addr::LOCALHOST, 128, Duration::from_secs(2));
+        assert_eq!(out.status, PingStatus::Success);
+        assert!(out.rtt_us.is_some(), "a successful probe must carry an RTT");
+        assert_eq!(out.from, Some(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn tcp_backend_keeps_a_refusal_distinct_from_a_timeout() {
+        // The point of the mode: on a network that filters ICMP, a refusal is
+        // still proof the host is up, so it must not look like a dead host.
+        let port = {
+            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let backend = TcpBackend { port };
+
+        let out = backend.echo(Ipv4Addr::LOCALHOST, 128, Duration::from_secs(5));
+        assert_eq!(out.status, PingStatus::Refused);
+        assert!(
+            out.rtt_us.is_some(),
+            "the round trip happened, even though nothing was listening"
+        );
+    }
+
+    #[test]
+    fn tcp_backend_reports_an_unreachable_host_as_timed_out() {
+        // TEST-NET-2, reserved and guaranteed unroutable.
+        let backend = TcpBackend { port: 80 };
+        let out = backend.echo(
+            Ipv4Addr::new(198, 51, 100, 7),
+            128,
+            Duration::from_millis(300),
+        );
+
+        assert_eq!(out.status, PingStatus::TimedOut);
+        assert_eq!(
+            out.rtt_us, None,
+            "a timeout measures the wait, not the path"
+        );
     }
 }

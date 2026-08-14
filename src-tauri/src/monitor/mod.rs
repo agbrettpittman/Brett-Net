@@ -11,10 +11,26 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::icmp::{EchoOutcome, PingBackend, PingStatus};
+use crate::probe::TcpBackend;
 use dns::DnsCache;
 
 /// Default TTL for a normal ping — high enough to cross any real path.
 pub const DEFAULT_TTL: u8 = 128;
+
+/// How a host is probed.
+///
+/// TCP mode exists for networks that filter ICMP, where a ping graph would
+/// otherwise be a wall of timeouts. Internally tagged so an invalid state — TCP
+/// without a port — cannot be represented at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "mode")]
+pub enum ProbeMode {
+    #[default]
+    Icmp,
+    Tcp {
+        port: u16,
+    },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +39,10 @@ pub struct HostSpec {
     pub label: String,
     /// Hostname or IPv4 literal.
     pub target: String,
+    /// Defaulted, so a `settings.json` written before probe modes existed still
+    /// parses instead of failing the whole load.
+    #[serde(default)]
+    pub probe: ProbeMode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,7 +130,12 @@ where
 
     for (i, host) in hosts.into_iter().enumerate() {
         let tx = tx.clone();
-        let backend = Arc::clone(&backend);
+        // Chosen per host, not per run: one list can mix a pingable gateway with
+        // a server that only answers on a port.
+        let backend: Arc<dyn PingBackend> = match host.probe {
+            ProbeMode::Icmp => Arc::clone(&backend),
+            ProbeMode::Tcp { port } => Arc::new(TcpBackend { port }),
+        };
         let dns = Arc::clone(&dns);
         let cfg = cfg.clone();
         let offset = stagger(i, count, cfg.interval);
@@ -201,6 +226,7 @@ mod tests {
                 id: format!("h{i}"),
                 label: format!("Host {i}"),
                 target: format!("10.0.0.{}", i + 1),
+                probe: ProbeMode::Icmp,
             })
             .collect()
     }
@@ -273,6 +299,7 @@ mod tests {
                 id: "bad".into(),
                 label: "Bad".into(),
                 target: "nope.invalid".into(),
+                probe: ProbeMode::Icmp,
             }],
             MonitorConfig {
                 interval: Duration::from_millis(50),
@@ -312,6 +339,7 @@ mod tests {
                 id: "loop".into(),
                 label: "Loopback".into(),
                 target: "127.0.0.1".into(),
+                probe: ProbeMode::Icmp,
             }],
             MonitorConfig {
                 interval: Duration::from_millis(50),
@@ -343,6 +371,76 @@ mod tests {
                 .filter(|r| r.status == PingStatus::Success)
                 .all(|r| r.rtt_us.is_some()),
             "a successful ping must carry an RTT"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tcp_host_is_probed_over_tcp_rather_than_pinged() {
+        // Bind a port so there is definitely something to connect to.
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let collected: Arc<Mutex<Vec<PingTick>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&collected);
+        // The ICMP backend is rigged to fail, so a success can only have come
+        // from the TCP one.
+        let icmp = Arc::new(MockBackend::new(1000));
+        icmp.script(Ipv4Addr::LOCALHOST, vec![MockBackend::timeout()]);
+
+        let handle = start(
+            vec![HostSpec {
+                id: "svc".into(),
+                label: "Service".into(),
+                target: "127.0.0.1".into(),
+                probe: ProbeMode::Tcp { port },
+            }],
+            MonitorConfig {
+                interval: Duration::from_millis(50),
+                timeout: Duration::from_millis(500),
+                ttl: DEFAULT_TTL,
+            },
+            Arc::clone(&icmp) as Arc<dyn PingBackend>,
+            Arc::new(DnsCache::new(Arc::new(Loopback), Duration::from_secs(60))),
+            move |tick| sink.lock().unwrap().push(tick),
+        );
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        handle.stop();
+
+        let ticks = collected.lock().unwrap();
+        let results: Vec<_> = ticks.iter().flat_map(|t| &t.results).collect();
+        assert!(!results.is_empty(), "expected results for the TCP host");
+        assert!(
+            results.iter().all(|r| r.status == PingStatus::Success),
+            "got {:?}",
+            results.iter().map(|r| r.status).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            icmp.call_count(),
+            0,
+            "a TCP host must never reach the ICMP backend"
+        );
+    }
+
+    #[test]
+    fn a_host_saved_before_probe_modes_existed_still_loads() {
+        // Settings files outlive releases. Without the serde default, an older
+        // `settings.json` would fail to parse and take every host with it.
+        let old = r#"{"id":"a","label":"A","target":"8.8.8.8"}"#;
+        let host: HostSpec = serde_json::from_str(old).unwrap();
+        assert_eq!(host.probe, ProbeMode::Icmp);
+    }
+
+    #[test]
+    fn probe_modes_round_trip_over_the_wire() {
+        let tcp = ProbeMode::Tcp { port: 443 };
+        assert_eq!(
+            serde_json::to_string(&tcp).unwrap(),
+            r#"{"mode":"tcp","port":443}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ProbeMode>(r#"{"mode":"icmp"}"#).unwrap(),
+            ProbeMode::Icmp
         );
     }
 

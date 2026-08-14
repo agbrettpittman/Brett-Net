@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { HostSpec } from '../lib/ipc';
+import { ICMP, type HostSpec } from '../lib/ipc';
 import { parseHostInput } from '../lib/parseHosts';
 import { PALETTE_PREVIEW } from '../lib/palette';
+import { parsePort, probeOf } from '../lib/probeMode';
 
 interface Props {
   host: HostSpec;
@@ -15,6 +16,9 @@ export function EditHost({ host, autoColor, onSave, onCancel }: Props) {
   const [label, setLabel] = useState(host.label);
   const [target, setTarget] = useState(host.target);
   const [color, setColor] = useState<string | undefined>(host.color);
+  const initial = probeOf(host);
+  const [tcp, setTcp] = useState(initial.mode === 'tcp');
+  const [port, setPort] = useState(initial.mode === 'tcp' ? String(initial.port) : '443');
   const firstField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -35,11 +39,19 @@ export function EditHost({ host, autoColor, onSave, onCancel }: Props) {
     target.trim() === ''
       ? 'Target is required'
       : (parseHostInput(target).errors[0] ?? null);
-  const valid = label.trim() !== '' && targetError === null;
+  const parsedPort = parsePort(port);
+  const portError = tcp && 'error' in parsedPort ? parsedPort.error : null;
+  const valid = label.trim() !== '' && targetError === null && portError === null;
 
   function save() {
     if (!valid) return;
-    onSave({ ...host, label: label.trim(), target: target.trim(), color });
+    onSave({
+      ...host,
+      label: label.trim(),
+      target: target.trim(),
+      probe: tcp && 'port' in parsedPort ? { mode: 'tcp', port: parsedPort.port } : ICMP,
+      color,
+    });
   }
 
   return (
@@ -81,6 +93,46 @@ export function EditHost({ host, autoColor, onSave, onCancel }: Props) {
           className="mt-1 w-full rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs outline-none focus:border-accent"
         />
         {targetError && <p className="mt-1 text-xs text-warn">{targetError}</p>}
+
+        <span className="mt-4 block text-xs font-medium">Probe with</span>
+        <div className="mt-1.5 flex items-center gap-2">
+          <div className="flex rounded-md border border-border p-0.5">
+            {[
+              { tcp: false, label: 'Ping' },
+              { tcp: true, label: 'TCP port' },
+            ].map((o) => (
+              <button
+                key={o.label}
+                onClick={() => setTcp(o.tcp)}
+                aria-pressed={tcp === o.tcp}
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                  tcp === o.tcp ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text'
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          {tcp && (
+            <input
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && save()}
+              inputMode="numeric"
+              aria-label="Port"
+              className="w-20 rounded-md border border-border bg-bg px-2.5 py-1 font-mono text-xs outline-none focus:border-accent"
+            />
+          )}
+        </div>
+        {portError ? (
+          <p className="mt-1 text-xs text-warn">{portError}</p>
+        ) : (
+          <p className="mt-1 text-xs text-text-muted">
+            {tcp
+              ? 'Opens a TCP connection instead of pinging. Use this where ICMP is blocked — but a handshake is slower than a ping, so these times sit above the rest.'
+              : 'Normal ICMP echo.'}
+          </p>
+        )}
 
         <span className="mt-4 block text-xs font-medium">Colour</span>
         <div className="mt-2 flex flex-wrap items-center gap-1.5">

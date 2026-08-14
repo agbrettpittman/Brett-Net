@@ -9,13 +9,26 @@ export type PingStatus =
   | 'destNetUnreachable'
   | 'ttlExpired'
   | 'dnsFailure'
+  /** TCP probe only: nothing listening on the port, but the host answered. */
+  | 'refused'
   | 'other';
+
+/**
+ * How a host is probed. Mirrors `monitor::ProbeMode`, internally tagged so a
+ * TCP mode without a port cannot be expressed.
+ */
+export type ProbeMode = { mode: 'icmp' } | { mode: 'tcp'; port: number };
+
+export const ICMP: ProbeMode = { mode: 'icmp' };
 
 export interface HostSpec {
   id: string;
   label: string;
   /** Hostname or IPv4 literal. */
   target: string;
+  /** Absent means ICMP — the default, and what every host saved before TCP
+   *  probe mode existed will be. */
+  probe?: ProbeMode;
   /** Optional colour override. UI-only; never sent to the backend. */
   color?: string;
 }
@@ -55,7 +68,12 @@ export function startMonitor(
   retentionDays: number,
 ): Promise<void> {
   // Strip UI-only fields so the wire payload matches the Rust struct exactly.
-  const wire = hosts.map(({ id, label, target }) => ({ id, label, target }));
+  const wire = hosts.map(({ id, label, target, probe }) => ({
+    id,
+    label,
+    target,
+    probe: probe ?? ICMP,
+  }));
   return invoke('start_monitor', {
     args: { hosts: wire, intervalMs, timeoutMs, retentionDays },
   });
@@ -296,5 +314,6 @@ export const STATUS_LABEL: Record<PingStatus, string> = {
   destNetUnreachable: 'Network unreachable',
   ttlExpired: 'TTL expired',
   dnsFailure: 'DNS failed',
+  refused: 'Refused — host is up',
   other: 'Error',
 };

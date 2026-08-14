@@ -495,6 +495,7 @@ mod tests {
             id: id.into(),
             label: format!("Host {id}"),
             target: format!("10.0.0.{}", id.len()),
+            probe: Default::default(),
         }
     }
 
@@ -597,9 +598,9 @@ mod tests {
         h.register(vec![host("a")]);
         h.record(tick(1000, "a", Some(500), PingStatus::Success));
         h.register(vec![HostSpec {
-            id: "a".into(),
             label: "Renamed".into(),
             target: "1.1.1.1".into(),
+            ..host("a")
         }]);
         h.record(tick(2000, "a", Some(500), PingStatus::Success));
         h.flush().unwrap();
@@ -735,9 +736,9 @@ mod tests {
         let tmp = TempDb::new("csv");
         let h = History::open(tmp.path()).unwrap();
         h.register(vec![HostSpec {
-            id: "a".into(),
             label: "Gateway".into(),
             target: "192.168.1.1".into(),
+            ..host("a")
         }]);
         h.record(tick(
             1_786_545_125_123,
@@ -772,9 +773,9 @@ mod tests {
         let tmp = TempDb::new("csv-quote");
         let h = History::open(tmp.path()).unwrap();
         h.register(vec![HostSpec {
-            id: "a".into(),
             label: "Site A, floor 2".into(),
             target: "10.0.0.1".into(),
+            ..host("a")
         }]);
         h.record(tick(0, "a", Some(1000), PingStatus::Success));
         h.flush().unwrap();

@@ -30,6 +30,11 @@ pub enum PingStatus {
     TtlExpired,
     /// Name resolution failed, so no echo was ever sent.
     DnsFailure,
+    /// A TCP probe was actively refused: nothing is listening on that port, but
+    /// the host answered, so it is up. Only ever produced by TCP probe mode —
+    /// ICMP has no equivalent, and the distinction is the whole reason to reach
+    /// for TCP when a network filters ping.
+    Refused,
     /// Some other `IP_STATUS`; the raw code is kept on [`EchoOutcome::raw_status`].
     Other,
 }
@@ -53,6 +58,7 @@ impl PingStatus {
             PingStatus::TtlExpired => 4,
             PingStatus::DnsFailure => 5,
             PingStatus::Other => 6,
+            PingStatus::Refused => 7,
         }
     }
 
@@ -66,6 +72,7 @@ impl PingStatus {
             3 => PingStatus::DestNetUnreachable,
             4 => PingStatus::TtlExpired,
             5 => PingStatus::DnsFailure,
+            7 => PingStatus::Refused,
             _ => PingStatus::Other,
         }
     }
@@ -79,17 +86,19 @@ impl PingStatus {
             PingStatus::DestNetUnreachable => "destNetUnreachable",
             PingStatus::TtlExpired => "ttlExpired",
             PingStatus::DnsFailure => "dnsFailure",
+            PingStatus::Refused => "refused",
             PingStatus::Other => "other",
         }
     }
 
-    pub const ALL: [PingStatus; 7] = [
+    pub const ALL: [PingStatus; 8] = [
         PingStatus::Success,
         PingStatus::TimedOut,
         PingStatus::DestHostUnreachable,
         PingStatus::DestNetUnreachable,
         PingStatus::TtlExpired,
         PingStatus::DnsFailure,
+        PingStatus::Refused,
         PingStatus::Other,
     ];
 }
@@ -189,6 +198,9 @@ mod tests {
         assert!(PingStatus::Success.is_success());
         assert!(!PingStatus::TimedOut.is_success());
         assert!(!PingStatus::TtlExpired.is_success());
+        // A refusal proves the host is up, but the check it was asked to make
+        // still failed — nothing is listening on that port.
+        assert!(!PingStatus::Refused.is_success());
     }
 
     #[test]
