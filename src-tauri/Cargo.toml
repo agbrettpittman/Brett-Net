@@ -39,6 +39,8 @@ windows = { version = "0.62", features = [
   "Win32_System_Power",
   # GetLastInputInfo and SendInput, for the keep-active nudge.
   "Win32_UI_Input_KeyboardAndMouse",
+  # CreateToolhelp32Snapshot, for naming the process behind a connection.
+  "Win32_System_Diagnostics_ToolHelp",
 ] }
 
 [profile.release]

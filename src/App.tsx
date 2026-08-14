@@ -14,12 +14,14 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { PingView } from './features/ping/PingView';
 import { PathView } from './features/path/PathView';
 import { DnsView } from './features/dns/DnsView';
+import { ConnectionsView } from './features/connections/ConnectionsView';
 import { AdaptersView } from './features/adapters/AdaptersView';
 
 const TABS = [
   { id: 'ping', label: 'Ping' },
   { id: 'path', label: 'Path' },
   { id: 'dns', label: 'DNS & Ports' },
+  { id: 'connections', label: 'Connections' },
   { id: 'adapters', label: 'Adapters' },
 ] as const;
 
@@ -101,6 +103,9 @@ export default function App() {
         </div>
         <div className={tab === 'dns' ? 'h-full' : 'hidden'}>
           <DnsView />
+        </div>
+        <div className={tab === 'connections' ? 'h-full' : 'hidden'}>
+          <ConnectionsView />
         </div>
         <div className={tab === 'adapters' ? 'h-full' : 'hidden'}>
           <AdaptersView theme={theme} />

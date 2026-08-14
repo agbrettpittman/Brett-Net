@@ -214,6 +214,28 @@ appear in the summary underneath, so nothing is lost but the noise.
 
 ---
 
+## Connections
+
+Every open TCP connection on this machine, and the process behind it —
+`netstat -ano` with the process already looked up for you. It refreshes every
+two seconds.
+
+Established connections come first and are grouped by application, so one
+program's conversations stay together. Two filters are on by default:
+
+- **Established only** hides listeners and the debris of closing sockets. Untick
+  it to see what this machine is listening *for*, and the `Time wait` sockets
+  left behind by connections that have already finished.
+- **Hide loopback** hides traffic that never leaves the machine. There is
+  usually a surprising amount of it, and none of it is a network concern.
+
+The filter box narrows by process, address, port, PID or state, and several
+words narrow by all of them — `chrome 443` means both, not that exact phrase.
+
+`unknown` in the Process column means the owning process belongs to another user
+account. Reading its name would need privileges this app deliberately doesn't
+ask for; the PID beside it is still correct.
+
 ## Adapters
 
 Everything `ipconfig /all` would tell you, without reading `ipconfig /all`:

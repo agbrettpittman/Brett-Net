@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CounterSample } from './traffic';
 import type { AwakeMode } from './keepAwake';
+import type { Connection } from './connections';
 
 /** Mirrors `icmp::PingStatus`. */
 export type PingStatus =
@@ -327,6 +328,11 @@ export function setKeepAwake(mode: AwakeMode, seconds: number): Promise<void> {
 /** Fires when a timed request runs out, so the UI can drop back to Off. */
 export function onKeepAwakeExpired(handler: () => void): Promise<UnlistenFn> {
   return listen(KEEP_AWAKE_EXPIRED_EVENT, () => handler());
+}
+
+/** Every open TCP connection, with the process that owns it. */
+export function listConnections(): Promise<Connection[]> {
+  return invoke<Connection[]>('list_connections');
 }
 
 /** One read of every interface's cumulative byte counters. */

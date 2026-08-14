@@ -28,6 +28,8 @@ Installs per-user with no administrator rights, and the installer is under
 - **DNS lookup and TCP port checks**, including full-range scans — and
   *refused* is reported separately from *no answer*, because a refusal proves
   the host is up.
+- **Connections** — every open TCP connection with the process that owns it,
+  filterable and live.
 - **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
 - **Live bandwidth per interface** — send and receive rates, session totals, and
   a chart with received above the line and sent below.
@@ -88,6 +90,7 @@ src/                    React app
   features/ping/        the latency chart
   features/path/        traceroute
   features/dns/         DNS lookup and port checks
+  features/connections/ open TCP connections
   features/adapters/    interface configuration and live bandwidth
   components/           host grid, editing, theme toggle, keep awake, update banner
   lib/                  series storage, aggregation, lanes, palette, CSV grid, IPC
@@ -99,6 +102,7 @@ src-tauri/
   src/probe/            name resolution and TCP port checks
   src/asn/              IP to network-operator lookup
   src/adapters/         GetAdaptersAddresses FFI
+  src/conn/             GetExtendedTcpTable FFI, open TCP connections
   src/awake/            SetThreadExecutionState, the keep-awake lock
   src/traffic/          GetIfTable2 FFI, per-interface byte counters
 docs/                   setup, install, and release guides

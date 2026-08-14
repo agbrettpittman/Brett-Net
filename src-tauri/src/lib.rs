@@ -8,6 +8,7 @@ use tauri::{Emitter, Manager};
 pub mod adapters;
 pub mod asn;
 pub mod awake;
+pub mod conn;
 pub mod db;
 pub mod icmp;
 pub mod monitor;
@@ -401,6 +402,12 @@ fn set_keep_awake(
     state.awake.set(mode, seconds).map(|_| ())
 }
 
+/// Every open TCP connection, with the process that owns it.
+#[tauri::command]
+async fn list_connections() -> Result<Vec<conn::Connection>, String> {
+    blocking(conn::list).await
+}
+
 /// One read of every interface's byte counters.
 ///
 /// Polled rather than pushed: it is a single cheap call, and leaving the timing
@@ -586,7 +593,8 @@ pub fn run() {
             scan_ports,
             list_adapters,
             interface_counters,
-            set_keep_awake
+            set_keep_awake,
+            list_connections
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
