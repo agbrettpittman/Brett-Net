@@ -108,13 +108,29 @@ export function sortConnections(connections: Connection[]): Connection[] {
 /** Mirrors `conn::watch::WatchSpec`. */
 export interface WatchSpec {
   id: string;
-  remoteAddr: string;
-  remotePort: number;
+  /** Null matches any peer, which is what a whole-process watch needs. */
+  remoteAddr: string | null;
+  remotePort: number | null;
   /** Matched by executable name, so an app restarting isn't a death. */
   process: string | null;
   /** The exact five-tuple, when only one socket counts. */
   socket: string | null;
   label: string;
+}
+
+/** How wide a watch is. Each is narrower than the one before. */
+export type WatchKind = 'process' | 'peer' | 'socket';
+
+export const WATCH_KIND_LABEL: Record<WatchKind, string> = {
+  process: 'Process',
+  peer: 'Peer',
+  socket: 'Socket',
+};
+
+/** Reads the width back off a spec, for display. */
+export function watchKind(spec: WatchSpec): WatchKind {
+  if (spec.socket !== null) return 'socket';
+  return spec.remoteAddr === null ? 'process' : 'peer';
 }
 
 /** Mirrors `conn::watch::Verdict`. */
@@ -148,44 +164,58 @@ export function isFault(verdict: Verdict | null): boolean {
 }
 
 /**
- * Builds a watch for a connection.
+ * Builds a watch for a connection at one of the three widths.
  *
- * `endpoint` — is this application still talking to this host — is the useful
- * unit for anything pooling connections, where individual sockets are replaced
- * constantly. `socket` pins one exact five-tuple for the cases where that
- * particular connection is the thing that matters.
+ * `peer` — is this application still talking to this host — is the right
+ * default for anything pooling connections, where individual sockets are
+ * replaced constantly. `process` widens that to any peer at all, which is what
+ * you want for something like a sync client that talks to a rotating set of
+ * front-end addresses. `socket` pins one exact five-tuple.
+ *
+ * A `process` watch on an unnamed row is refused rather than silently matching
+ * everything: without a name there is nothing to narrow by.
  */
-export function watchFor(c: Connection, kind: 'endpoint' | 'socket'): WatchSpec {
+export function watchFor(c: Connection, kind: WatchKind): WatchSpec | null {
   const peer = endpoint(c.remoteAddr, c.remotePort, c.v6);
   const who = c.process ?? `pid ${c.pid}`;
 
-  return kind === 'socket'
-    ? {
-        id: `s:${c.id}`,
-        remoteAddr: c.remoteAddr,
-        remotePort: c.remotePort,
-        process: c.process,
-        socket: c.id,
-        label: `${who} ${endpoint(c.localAddr, c.localPort, c.v6)} → ${peer}`,
-      }
-    : {
-        id: `e:${c.process ?? ''}:${c.remoteAddr}:${c.remotePort}`,
-        remoteAddr: c.remoteAddr,
-        remotePort: c.remotePort,
-        process: c.process,
-        socket: null,
-        label: `${who} → ${peer}`,
-      };
+  if (kind === 'socket') {
+    return {
+      id: `s:${c.id}`,
+      remoteAddr: c.remoteAddr,
+      remotePort: c.remotePort,
+      process: c.process,
+      socket: c.id,
+      label: `${who} ${endpoint(c.localAddr, c.localPort, c.v6)} → ${peer}`,
+    };
+  }
+
+  if (kind === 'process') {
+    if (c.process === null) return null;
+    return {
+      id: `p:${c.process}`,
+      remoteAddr: null,
+      remotePort: null,
+      process: c.process,
+      socket: null,
+      label: `${c.process} — any peer`,
+    };
+  }
+
+  return {
+    id: `e:${c.process ?? ''}:${c.remoteAddr}:${c.remotePort}`,
+    remoteAddr: c.remoteAddr,
+    remotePort: c.remotePort,
+    process: c.process,
+    socket: null,
+    label: `${who} → ${peer}`,
+  };
 }
 
 /** Whether this exact watch is already registered. */
-export function isWatched(
-  watches: WatchSpec[],
-  c: Connection,
-  kind: 'endpoint' | 'socket',
-): boolean {
-  const id = watchFor(c, kind).id;
-  return watches.some((w) => w.id === id);
+export function isWatched(watches: WatchSpec[], c: Connection, kind: WatchKind): boolean {
+  const spec = watchFor(c, kind);
+  return spec !== null && watches.some((w) => w.id === spec.id);
 }
 
 /** How many rows each state accounts for, for the summary line. */

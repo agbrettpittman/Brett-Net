@@ -10,19 +10,29 @@ use serde::{Deserialize, Serialize};
 
 use super::Connection;
 
-/// What to keep an eye on.
+/// What to keep an eye on, at one of three widths.
 ///
-/// An endpoint watch — a process talking to a host and port — is the useful
-/// unit for anything that pools connections. Six sockets to the same server
-/// churning constantly is normal, and watching any one of them would report a
-/// death every few seconds. A socket watch is available for the cases where one
-/// specific connection really is the thing that matters.
+/// The fields narrow the match rather than selecting a mode, so one shape
+/// covers all three:
+///
+/// | Set | Watches |
+/// |---|---|
+/// | `process` only | everything that application is talking to |
+/// | `process` + `remote_*` | that application's conversation with one peer |
+/// | `socket` | one exact five-tuple |
+///
+/// The middle one is the right default for anything that pools connections.
+/// Six sockets to the same server churning constantly is one healthy
+/// conversation, and watching any single one would report a death every few
+/// seconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchSpec {
     pub id: String,
-    pub remote_addr: String,
-    pub remote_port: u16,
+    /// `None` matches any peer, which is what makes a whole-process watch
+    /// possible.
+    pub remote_addr: Option<String>,
+    pub remote_port: Option<u16>,
     /// Matched by executable name, not PID, so an application restarting does
     /// not read as the connection dying.
     pub process: Option<String>,
@@ -95,9 +105,24 @@ pub fn matches(spec: &WatchSpec, c: &Connection) -> bool {
     if let Some(socket) = &spec.socket {
         return &c.id == socket;
     }
-    if c.remote_addr != spec.remote_addr || c.remote_port != spec.remote_port {
+    // A spec that narrows by nothing would match every connection on the
+    // machine, so it matches none instead. Only reachable from a malformed
+    // payload, but the failure would be silent and very confusing.
+    if spec.remote_addr.is_none() && spec.process.is_none() {
         return false;
     }
+
+    if spec
+        .remote_addr
+        .as_ref()
+        .is_some_and(|a| &c.remote_addr != a)
+    {
+        return false;
+    }
+    if spec.remote_port.is_some_and(|p| c.remote_port != p) {
+        return false;
+    }
+
     match (&spec.process, &c.process) {
         (Some(want), Some(have)) => want.eq_ignore_ascii_case(have),
         // A watch naming a process cannot be satisfied by a row we could not
@@ -322,8 +347,8 @@ mod tests {
     fn spec() -> WatchSpec {
         WatchSpec {
             id: "w1".into(),
-            remote_addr: "1.1.1.1".into(),
-            remote_port: 443,
+            remote_addr: Some("1.1.1.1".into()),
+            remote_port: Some(443),
             process: Some("chrome.exe".into()),
             socket: None,
             label: "chrome → 1.1.1.1:443".into(),
@@ -379,6 +404,106 @@ mod tests {
         assert!(matches(&any, &conn(&[("process", "-")])));
     }
 
+    /// Watches everything one application is talking to, at any peer.
+    fn process_spec() -> WatchSpec {
+        WatchSpec {
+            id: "p1".into(),
+            remote_addr: None,
+            remote_port: None,
+            process: Some("GoogleDriveFS.exe".into()),
+            socket: None,
+            label: "GoogleDriveFS.exe — any peer".into(),
+        }
+    }
+
+    #[test]
+    fn a_process_watch_takes_every_peer() {
+        let p = process_spec();
+        assert!(matches(&p, &conn(&[("process", "GoogleDriveFS.exe")])));
+        assert!(matches(
+            &p,
+            &conn(&[("process", "GoogleDriveFS.exe"), ("remote", "8.8.8.8")])
+        ));
+        assert!(matches(
+            &p,
+            &conn(&[("process", "GoogleDriveFS.exe"), ("port", "80")])
+        ));
+    }
+
+    #[test]
+    fn a_process_watch_still_excludes_other_applications() {
+        assert!(!matches(
+            &process_spec(),
+            &conn(&[("process", "chrome.exe")])
+        ));
+        assert!(!matches(&process_spec(), &conn(&[("process", "-")])));
+    }
+
+    #[test]
+    fn a_process_watch_is_up_while_any_connection_is_live() {
+        let p = process_spec();
+        let rows = [
+            conn(&[
+                ("process", "GoogleDriveFS.exe"),
+                ("state", "Time wait"),
+                ("id", "a"),
+            ]),
+            conn(&[
+                ("process", "GoogleDriveFS.exe"),
+                ("remote", "8.8.8.8"),
+                ("id", "b"),
+            ]),
+        ];
+        assert!(is_up(&p, &rows));
+
+        // Only wreckage left: the application has stopped talking.
+        let dead = [conn(&[
+            ("process", "GoogleDriveFS.exe"),
+            ("state", "Time wait"),
+        ])];
+        assert!(!is_up(&p, &dead));
+    }
+
+    #[test]
+    fn a_process_watch_survives_the_peer_changing() {
+        // Google Drive rotating between front-end addresses is not a drop.
+        let mut w = Watcher::new();
+        w.set_specs(vec![process_spec()]);
+        let procs = running(&["googledrivefs.exe"]);
+
+        w.tick(
+            vec![conn(&[("process", "GoogleDriveFS.exe"), ("id", "a")])],
+            &procs,
+            0,
+        );
+        let events = w.tick(
+            vec![conn(&[
+                ("process", "GoogleDriveFS.exe"),
+                ("remote", "172.217.113.4"),
+                ("id", "b"),
+            ])],
+            &procs,
+            1,
+        );
+
+        assert!(events.is_empty(), "got {events:?}");
+    }
+
+    #[test]
+    fn a_spec_that_narrows_by_nothing_matches_nothing() {
+        // Rather than matching every connection on the machine, which is the
+        // sort of failure nobody would spot.
+        let empty = WatchSpec {
+            id: "bad".into(),
+            remote_addr: None,
+            remote_port: None,
+            process: None,
+            socket: None,
+            label: String::new(),
+        };
+        assert!(!matches(&empty, &conn(&[])));
+    }
+
     #[test]
     fn a_socket_watch_matches_exactly_one() {
         let only = WatchSpec {
@@ -395,7 +520,7 @@ mod tests {
         // way — including for a socket to a peer the spec no longer names.
         let only = WatchSpec {
             socket: Some("b".into()),
-            remote_addr: "9.9.9.9".into(),
+            remote_addr: Some("9.9.9.9".into()),
             ..spec()
         };
         assert!(matches(&only, &conn(&[("id", "b")])));
@@ -655,7 +780,7 @@ mod tests {
     fn watches_are_independent() {
         let other = WatchSpec {
             id: "w2".into(),
-            remote_addr: "8.8.8.8".into(),
+            remote_addr: Some("8.8.8.8".into()),
             ..spec()
         };
         let mut w = Watcher::new();

@@ -238,19 +238,29 @@ ask for; the PID beside it is still correct.
 
 ### Watching a connection
 
-Hover a row and two buttons appear:
+Hover a row and three buttons appear, each narrower than the last:
 
 | Button | Watches |
 |---|---|
-| **App** | Whether that application is still talking to that host and port at all. |
+| **Process** | Whether that application is talking to *anything* at all. |
+| **Peer** | Whether it's still talking to *that host and port*. |
 | **Socket** | That one exact connection, and nothing else. |
 
-**Use App unless you have a reason not to.** Most software keeps a pool of
+**Peer is the right default for most things.** Software keeps a pool of
 connections to a server and replaces them constantly — six sockets to the same
 host, each lasting seconds, is one healthy conversation. Watching a single
-socket there would report a death every few seconds. **Socket** is for the cases
-where one specific connection genuinely is the thing that matters, like a VPN
-tunnel or a database session.
+socket there would report a death every few seconds.
+
+**Process is for applications that move between addresses.** A sync client like
+Google Drive spreads its work across a rotating set of front-end IPs, so no
+single peer stays put for long; watching the process asks the question you
+actually care about, which is whether it can reach its service at all.
+
+**Socket** is for when one specific connection genuinely is the thing that
+matters — a VPN tunnel, an RDP session, a database connection.
+
+Process watches only appear on rows Brett-Net could name, since there's nothing
+to identify an unnamed process by.
 
 Watching keeps running whether or not this tab is showing, and whether or not
 the connection is on screen — the point is catching a drop you weren't looking

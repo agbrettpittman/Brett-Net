@@ -11,6 +11,8 @@ import {
   sortConnections,
   VERDICT_LABEL,
   watchFor,
+  watchKind,
+  WATCH_KIND_LABEL,
   type Connection,
 } from './connections';
 
@@ -183,37 +185,37 @@ describe('watchFor', () => {
   it('builds an endpoint watch that ignores the local port', () => {
     // Two sockets from one app to one peer must produce the same watch, or a
     // pool would be watched several times over.
-    const a = watchFor(conn({ localPort: 1000, id: 'a' }), 'endpoint');
-    const b = watchFor(conn({ localPort: 2000, id: 'b' }), 'endpoint');
+    const a = watchFor(conn({ localPort: 1000, id: 'a' }), 'peer')!;
+    const b = watchFor(conn({ localPort: 2000, id: 'b' }), 'peer')!;
     expect(a.id).toBe(b.id);
     expect(a.socket).toBeNull();
   });
 
   it('separates the same peer reached by different applications', () => {
-    const chrome = watchFor(conn({ process: 'chrome.exe' }), 'endpoint');
-    const teams = watchFor(conn({ process: 'Teams.exe' }), 'endpoint');
+    const chrome = watchFor(conn({ process: 'chrome.exe' }), 'peer')!;
+    const teams = watchFor(conn({ process: 'Teams.exe' }), 'peer')!;
     expect(chrome.id).not.toBe(teams.id);
   });
 
   it('separates different ports on the same host', () => {
-    const https = watchFor(conn({ remotePort: 443 }), 'endpoint');
-    const http = watchFor(conn({ remotePort: 80 }), 'endpoint');
+    const https = watchFor(conn({ remotePort: 443 }), 'peer')!;
+    const http = watchFor(conn({ remotePort: 80 }), 'peer')!;
     expect(https.id).not.toBe(http.id);
   });
 
   it('pins the five-tuple for a socket watch', () => {
-    const w = watchFor(conn({ id: 'the-socket' }), 'socket');
+    const w = watchFor(conn({ id: 'the-socket' }), 'socket')!;
     expect(w.socket).toBe('the-socket');
-    expect(w.id).not.toBe(watchFor(conn({ id: 'other' }), 'socket').id);
+    expect(w.id).not.toBe(watchFor(conn({ id: 'other' }), 'socket')!.id);
   });
 
   it('labels an unnamed process by its pid rather than leaving a gap', () => {
-    const w = watchFor(conn({ process: null, pid: 987 }), 'endpoint');
+    const w = watchFor(conn({ process: null, pid: 987 }), 'peer')!;
     expect(w.label).toContain('pid 987');
   });
 
   it('brackets IPv6 in the label', () => {
-    const w = watchFor(conn({ remoteAddr: '2606:4700::1111', v6: true }), 'endpoint');
+    const w = watchFor(conn({ remoteAddr: '2606:4700::1111', v6: true }), 'peer')!;
     expect(w.label).toContain('[2606:4700::1111]:443');
   });
 });
@@ -221,17 +223,17 @@ describe('watchFor', () => {
 describe('isWatched', () => {
   it('recognises a registered endpoint watch from any of its sockets', () => {
     const c = conn({ id: 'a' });
-    const watches = [watchFor(c, 'endpoint')];
-    expect(isWatched(watches, conn({ id: 'b' }), 'endpoint')).toBe(true);
+    const watches = [watchFor(c, 'peer')!];
+    expect(isWatched(watches, conn({ id: 'b' }), 'peer')).toBe(true);
   });
 
   it('does not confuse the two kinds', () => {
     const c = conn();
-    expect(isWatched([watchFor(c, 'endpoint')], c, 'socket')).toBe(false);
+    expect(isWatched([watchFor(c, 'peer')!], c, 'socket')).toBe(false);
   });
 
   it('is false against an empty list', () => {
-    expect(isWatched([], conn(), 'endpoint')).toBe(false);
+    expect(isWatched([], conn(), 'peer')).toBe(false);
   });
 });
 
@@ -248,5 +250,45 @@ describe('isFault', () => {
 describe('VERDICT_LABEL', () => {
   it('names every verdict', () => {
     for (const v of Object.values(VERDICT_LABEL)) expect(v.length).toBeGreaterThan(0);
+  });
+});
+
+describe('watchFor process kind', () => {
+  it('watches every peer of one application', () => {
+    const w = watchFor(conn({ process: 'GoogleDriveFS.exe' }), 'process')!;
+    expect(w.remoteAddr).toBeNull();
+    expect(w.remotePort).toBeNull();
+    expect(w.process).toBe('GoogleDriveFS.exe');
+  });
+
+  it('is the same watch whichever of that app’s rows you start from', () => {
+    const a = watchFor(conn({ process: 'GoogleDriveFS.exe', remoteAddr: '172.217.113.4' }), 'process')!;
+    const b = watchFor(conn({ process: 'GoogleDriveFS.exe', remoteAddr: '172.217.115.4' }), 'process')!;
+    expect(a.id).toBe(b.id);
+  });
+
+  it('is refused for an unnamed process rather than matching everything', () => {
+    // Without a name there is nothing to narrow by, and a spec that narrows by
+    // nothing would watch the entire machine.
+    expect(watchFor(conn({ process: null }), 'process')).toBeNull();
+    expect(isWatched([], conn({ process: null }), 'process')).toBe(false);
+  });
+
+  it('does not collide with the peer watch for the same row', () => {
+    const c = conn();
+    expect(watchFor(c, 'process')!.id).not.toBe(watchFor(c, 'peer')!.id);
+  });
+});
+
+describe('watchKind', () => {
+  it('reads the width back off a spec', () => {
+    const c = conn();
+    expect(watchKind(watchFor(c, 'process')!)).toBe('process');
+    expect(watchKind(watchFor(c, 'peer')!)).toBe('peer');
+    expect(watchKind(watchFor(c, 'socket')!)).toBe('socket');
+  });
+
+  it('names every kind', () => {
+    for (const v of Object.values(WATCH_KIND_LABEL)) expect(v.length).toBeGreaterThan(0);
   });
 });

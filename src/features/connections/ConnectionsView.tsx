@@ -17,8 +17,11 @@ import {
   sortConnections,
   VERDICT_LABEL,
   watchFor,
+  watchKind,
+  WATCH_KIND_LABEL,
   type Connection,
   type WatchEvent,
+  type WatchKind,
   type WatchSpec,
 } from '../../lib/connections';
 import { readBoolean, write } from '../../lib/prefs';
@@ -104,8 +107,9 @@ export function ConnectionsView({ active }: { active: boolean }) {
     return () => unlisten?.();
   }, []);
 
-  const toggleWatch = useCallback((c: Connection, kind: 'endpoint' | 'socket') => {
+  const toggleWatch = useCallback((c: Connection, kind: WatchKind) => {
     const spec = watchFor(c, kind);
+    if (spec === null) return;
     setWatchList((prev) =>
       prev.some((w) => w.id === spec.id) ? prev.filter((w) => w.id !== spec.id) : [...prev, spec],
     );
@@ -123,8 +127,10 @@ export function ConnectionsView({ active }: { active: boolean }) {
     const up = new Set<string>();
     for (const c of all) {
       if (c.state !== 'Established') continue;
-      up.add(watchFor(c, 'endpoint').id);
-      up.add(watchFor(c, 'socket').id);
+      for (const kind of ['process', 'peer', 'socket'] as const) {
+        const spec = watchFor(c, kind);
+        if (spec) up.add(spec.id);
+      }
     }
     return up;
   }, [all]);
@@ -236,10 +242,20 @@ export function ConnectionsView({ active }: { active: boolean }) {
                     {/* Listeners have no peer to watch. */}
                     {c.state !== 'Listen' && (
                       <span className="flex justify-end gap-1">
+                        {/* Widest first, so the row reads left to right as
+                            progressively narrower. */}
+                        {c.process !== null && (
+                          <WatchButton
+                            on={isWatched(watches, c, 'process')}
+                            onClick={() => toggleWatch(c, 'process')}
+                            label="Process"
+                            title={`Watch whether ${c.process} is talking to anything at all. Survives it moving between peers.`}
+                          />
+                        )}
                         <WatchButton
-                          on={isWatched(watches, c, 'endpoint')}
-                          onClick={() => toggleWatch(c, 'endpoint')}
-                          label="App"
+                          on={isWatched(watches, c, 'peer')}
+                          onClick={() => toggleWatch(c, 'peer')}
+                          label="Peer"
                           title={`Watch whether ${c.process ?? 'this process'} is still talking to ${endpoint(c.remoteAddr, c.remotePort, c.v6)}. Survives the pool replacing individual sockets.`}
                         />
                         <WatchButton
@@ -301,7 +317,7 @@ function Watched({
                 title={up ? 'Connected' : 'Not connected'}
               />
               <span className="font-mono">{w.label}</span>
-              <span className="text-text-muted">{w.socket ? 'socket' : 'app'}</span>
+              <span className="text-text-muted">{WATCH_KIND_LABEL[watchKind(w)].toLowerCase()}</span>
               <button
                 onClick={() => onRemove(w.id)}
                 aria-label={`Stop watching ${w.label}`}
