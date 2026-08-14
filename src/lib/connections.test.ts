@@ -6,7 +6,11 @@ import {
   filterConnections,
   isListener,
   isLoopback,
+  isFault,
+  isWatched,
   sortConnections,
+  VERDICT_LABEL,
+  watchFor,
   type Connection,
 } from './connections';
 
@@ -172,5 +176,77 @@ describe('isListener', () => {
   it('keys off the state, not the address', () => {
     expect(isListener(conn({ state: 'Listen' }))).toBe(true);
     expect(isListener(conn())).toBe(false);
+  });
+});
+
+describe('watchFor', () => {
+  it('builds an endpoint watch that ignores the local port', () => {
+    // Two sockets from one app to one peer must produce the same watch, or a
+    // pool would be watched several times over.
+    const a = watchFor(conn({ localPort: 1000, id: 'a' }), 'endpoint');
+    const b = watchFor(conn({ localPort: 2000, id: 'b' }), 'endpoint');
+    expect(a.id).toBe(b.id);
+    expect(a.socket).toBeNull();
+  });
+
+  it('separates the same peer reached by different applications', () => {
+    const chrome = watchFor(conn({ process: 'chrome.exe' }), 'endpoint');
+    const teams = watchFor(conn({ process: 'Teams.exe' }), 'endpoint');
+    expect(chrome.id).not.toBe(teams.id);
+  });
+
+  it('separates different ports on the same host', () => {
+    const https = watchFor(conn({ remotePort: 443 }), 'endpoint');
+    const http = watchFor(conn({ remotePort: 80 }), 'endpoint');
+    expect(https.id).not.toBe(http.id);
+  });
+
+  it('pins the five-tuple for a socket watch', () => {
+    const w = watchFor(conn({ id: 'the-socket' }), 'socket');
+    expect(w.socket).toBe('the-socket');
+    expect(w.id).not.toBe(watchFor(conn({ id: 'other' }), 'socket').id);
+  });
+
+  it('labels an unnamed process by its pid rather than leaving a gap', () => {
+    const w = watchFor(conn({ process: null, pid: 987 }), 'endpoint');
+    expect(w.label).toContain('pid 987');
+  });
+
+  it('brackets IPv6 in the label', () => {
+    const w = watchFor(conn({ remoteAddr: '2606:4700::1111', v6: true }), 'endpoint');
+    expect(w.label).toContain('[2606:4700::1111]:443');
+  });
+});
+
+describe('isWatched', () => {
+  it('recognises a registered endpoint watch from any of its sockets', () => {
+    const c = conn({ id: 'a' });
+    const watches = [watchFor(c, 'endpoint')];
+    expect(isWatched(watches, conn({ id: 'b' }), 'endpoint')).toBe(true);
+  });
+
+  it('does not confuse the two kinds', () => {
+    const c = conn();
+    expect(isWatched([watchFor(c, 'endpoint')], c, 'socket')).toBe(false);
+  });
+
+  it('is false against an empty list', () => {
+    expect(isWatched([], conn(), 'endpoint')).toBe(false);
+  });
+});
+
+describe('isFault', () => {
+  it('treats only an abrupt drop as a network question', () => {
+    expect(isFault('abrupt')).toBe(true);
+    for (const v of ['processExited', 'localClosed', 'remoteClosed', 'neverConnected'] as const) {
+      expect(isFault(v), v).toBe(false);
+    }
+    expect(isFault(null)).toBe(false);
+  });
+});
+
+describe('VERDICT_LABEL', () => {
+  it('names every verdict', () => {
+    for (const v of Object.values(VERDICT_LABEL)) expect(v.length).toBeGreaterThan(0);
   });
 });

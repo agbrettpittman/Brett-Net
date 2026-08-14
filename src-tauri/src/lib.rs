@@ -29,6 +29,9 @@ pub const PING_TICK_EVENT: &str = "ping://tick";
 /// Off without polling for it.
 pub const KEEP_AWAKE_EXPIRED_EVENT: &str = "keep-awake://expired";
 
+/// Emitted when a watched connection drops or comes back.
+pub const WATCH_EVENT: &str = "conn://watch";
+
 /// How long a resolved hostname is trusted before re-resolving.
 const DNS_TTL: Duration = Duration::from_secs(300);
 
@@ -47,6 +50,10 @@ struct AppState {
     /// Owns the thread holding any wake lock. Never rebuilt — the lock belongs
     /// to that thread and would be lost with it.
     awake: KeepAwake,
+    /// Watched connections and their last known state.
+    watcher: Mutex<conn::watch::Watcher>,
+    /// Recent watch events, so the log outlives a UI reload.
+    watch_log: Mutex<std::collections::VecDeque<conn::watch::WatchEvent>>,
 }
 
 #[derive(Serialize)]
@@ -408,6 +415,36 @@ async fn list_connections() -> Result<Vec<conn::Connection>, String> {
     blocking(conn::list).await
 }
 
+/// How often watched connections are checked.
+///
+/// Faster than the table the UI shows, because the closing states are the
+/// evidence for *why* a connection ended and some of them are brief. A remote
+/// close seen too late looks like an abrupt drop.
+const WATCH_POLL: Duration = Duration::from_secs(1);
+
+/// Most recent watch events kept in memory, so the log survives a UI reload.
+const WATCH_LOG_LIMIT: usize = 200;
+
+/// Replaces the set of watched connections.
+///
+/// The frontend owns the list and pushes all of it, so there is no add/remove
+/// drift between the two sides to reconcile.
+#[tauri::command]
+fn set_watches(state: tauri::State<'_, AppState>, watches: Vec<conn::watch::WatchSpec>) {
+    state.watcher.lock().unwrap().set_specs(watches);
+}
+
+/// The watch event log, newest last.
+#[tauri::command]
+fn watch_events(state: tauri::State<'_, AppState>) -> Vec<conn::watch::WatchEvent> {
+    state.watch_log.lock().unwrap().iter().cloned().collect()
+}
+
+#[tauri::command]
+fn clear_watch_events(state: tauri::State<'_, AppState>) {
+    state.watch_log.lock().unwrap().clear();
+}
+
 /// One read of every interface's byte counters.
 ///
 /// Polled rather than pushed: it is a single cheap call, and leaving the timing
@@ -545,6 +582,55 @@ fn platform_backend() -> icmp::mock::MockBackend {
     icmp::mock::MockBackend::new(1000)
 }
 
+/// Polls the connection table and reports what happens to watched connections.
+///
+/// Runs for the life of the app rather than while a tab is open: the whole
+/// point is to catch a drop you were not watching for, and a watcher that only
+/// runs while you are looking at it would miss exactly those.
+fn spawn_watch_loop(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticker = tokio::time::interval(WATCH_POLL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+
+            let state = app.state::<AppState>();
+            // Reading the table is not free, so skip it entirely when nothing
+            // is being watched.
+            if state.watcher.lock().unwrap().specs().is_empty() {
+                continue;
+            }
+
+            let Ok(Ok((snapshot, processes))) = tauri::async_runtime::spawn_blocking(|| {
+                conn::list().map(|c| (c, conn::running_processes()))
+            })
+            .await
+            else {
+                continue;
+            };
+
+            let events = {
+                let mut watcher = state.watcher.lock().unwrap();
+                watcher.tick(snapshot, &processes, db::now_ms())
+            };
+
+            if events.is_empty() {
+                continue;
+            }
+
+            let mut log = state.watch_log.lock().unwrap();
+            for event in events {
+                let _ = app.emit(WATCH_EVENT, &event);
+                log.push_back(event);
+                while log.len() > WATCH_LOG_LIMIT {
+                    log.pop_front();
+                }
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -574,7 +660,11 @@ pub fn run() {
                         let _ = handle.emit(KEEP_AWAKE_EXPIRED_EVENT, ());
                     })
                 },
+                watcher: Mutex::new(conn::watch::Watcher::new()),
+                watch_log: Mutex::new(std::collections::VecDeque::new()),
             });
+
+            spawn_watch_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -594,7 +684,10 @@ pub fn run() {
             list_adapters,
             interface_counters,
             set_keep_awake,
-            list_connections
+            list_connections,
+            set_watches,
+            watch_events,
+            clear_watch_events
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

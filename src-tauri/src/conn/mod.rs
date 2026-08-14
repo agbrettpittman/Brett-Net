@@ -8,6 +8,8 @@ use serde::Serialize;
 #[cfg(windows)]
 pub mod windows;
 
+pub mod watch;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection {
@@ -72,10 +74,27 @@ pub fn list() -> Result<Vec<Connection>, String> {
     windows::list()
 }
 
+/// Executable names of every running process, lower-cased.
+///
+/// Used to tell "the connection died" from "the application closed", which is
+/// the difference between a network fault and nothing at all.
+#[cfg(windows)]
+pub fn running_processes() -> std::collections::HashSet<String> {
+    windows::process_names()
+        .into_values()
+        .map(|n| n.to_ascii_lowercase())
+        .collect()
+}
+
 /// Non-Windows builds exist only so the crate compiles for tooling.
 #[cfg(not(windows))]
 pub fn list() -> Result<Vec<Connection>, String> {
     Err("connection information is only available on Windows".into())
+}
+
+#[cfg(not(windows))]
+pub fn running_processes() -> std::collections::HashSet<String> {
+    std::collections::HashSet::new()
 }
 
 #[cfg(test)]

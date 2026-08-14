@@ -29,7 +29,8 @@ Installs per-user with no administrator rights, and the installer is under
   *refused* is reported separately from *no answer*, because a refusal proves
   the host is up.
 - **Connections** — every open TCP connection with the process that owns it,
-  filterable and live.
+  filterable and live. Watch one and Brett-Net says *why* it went away: who
+  closed it, whether the process exited, or whether it dropped mid-conversation.
 - **Adapter info** — address, gateway, DNS, DHCP, MAC, MTU and link speed.
 - **Live bandwidth per interface** — send and receive rates, session totals, and
   a chart with received above the line and sent below.

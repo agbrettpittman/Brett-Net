@@ -105,6 +105,89 @@ export function sortConnections(connections: Connection[]): Connection[] {
   });
 }
 
+/** Mirrors `conn::watch::WatchSpec`. */
+export interface WatchSpec {
+  id: string;
+  remoteAddr: string;
+  remotePort: number;
+  /** Matched by executable name, so an app restarting isn't a death. */
+  process: string | null;
+  /** The exact five-tuple, when only one socket counts. */
+  socket: string | null;
+  label: string;
+}
+
+/** Mirrors `conn::watch::Verdict`. */
+export type Verdict =
+  | 'processExited'
+  | 'localClosed'
+  | 'remoteClosed'
+  | 'neverConnected'
+  | 'abrupt';
+
+export interface WatchEvent {
+  watchId: string;
+  label: string;
+  at: number;
+  up: boolean;
+  verdict: Verdict | null;
+  detail: string;
+}
+
+export const VERDICT_LABEL: Record<Verdict, string> = {
+  processExited: 'Process exited',
+  localClosed: 'Closed locally',
+  remoteClosed: 'Closed by far end',
+  neverConnected: 'Never connected',
+  abrupt: 'Dropped',
+};
+
+/** Only an abrupt drop is a network question; the rest are normal endings. */
+export function isFault(verdict: Verdict | null): boolean {
+  return verdict === 'abrupt';
+}
+
+/**
+ * Builds a watch for a connection.
+ *
+ * `endpoint` — is this application still talking to this host — is the useful
+ * unit for anything pooling connections, where individual sockets are replaced
+ * constantly. `socket` pins one exact five-tuple for the cases where that
+ * particular connection is the thing that matters.
+ */
+export function watchFor(c: Connection, kind: 'endpoint' | 'socket'): WatchSpec {
+  const peer = endpoint(c.remoteAddr, c.remotePort, c.v6);
+  const who = c.process ?? `pid ${c.pid}`;
+
+  return kind === 'socket'
+    ? {
+        id: `s:${c.id}`,
+        remoteAddr: c.remoteAddr,
+        remotePort: c.remotePort,
+        process: c.process,
+        socket: c.id,
+        label: `${who} ${endpoint(c.localAddr, c.localPort, c.v6)} → ${peer}`,
+      }
+    : {
+        id: `e:${c.process ?? ''}:${c.remoteAddr}:${c.remotePort}`,
+        remoteAddr: c.remoteAddr,
+        remotePort: c.remotePort,
+        process: c.process,
+        socket: null,
+        label: `${who} → ${peer}`,
+      };
+}
+
+/** Whether this exact watch is already registered. */
+export function isWatched(
+  watches: WatchSpec[],
+  c: Connection,
+  kind: 'endpoint' | 'socket',
+): boolean {
+  const id = watchFor(c, kind).id;
+  return watches.some((w) => w.id === id);
+}
+
 /** How many rows each state accounts for, for the summary line. */
 export function countByState(connections: Connection[]): Map<string, number> {
   const out = new Map<string, number>();

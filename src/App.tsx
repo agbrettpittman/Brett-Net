@@ -105,7 +105,7 @@ export default function App() {
           <DnsView />
         </div>
         <div className={tab === 'connections' ? 'h-full' : 'hidden'}>
-          <ConnectionsView />
+          <ConnectionsView active={tab === 'connections'} />
         </div>
         <div className={tab === 'adapters' ? 'h-full' : 'hidden'}>
           <AdaptersView theme={theme} />

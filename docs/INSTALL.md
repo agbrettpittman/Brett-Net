@@ -236,6 +236,40 @@ words narrow by all of them — `chrome 443` means both, not that exact phrase.
 account. Reading its name would need privileges this app deliberately doesn't
 ask for; the PID beside it is still correct.
 
+### Watching a connection
+
+Hover a row and two buttons appear:
+
+| Button | Watches |
+|---|---|
+| **App** | Whether that application is still talking to that host and port at all. |
+| **Socket** | That one exact connection, and nothing else. |
+
+**Use App unless you have a reason not to.** Most software keeps a pool of
+connections to a server and replaces them constantly — six sockets to the same
+host, each lasting seconds, is one healthy conversation. Watching a single
+socket there would report a death every few seconds. **Socket** is for the cases
+where one specific connection genuinely is the thing that matters, like a VPN
+tunnel or a database session.
+
+Watching keeps running whether or not this tab is showing, and whether or not
+the connection is on screen — the point is catching a drop you weren't looking
+at. Your watches are remembered between runs.
+
+When a watched connection goes away, Brett-Net says **why**, using what Windows
+leaves behind:
+
+| Verdict | Means |
+|---|---|
+| **Closed by far end** | The server hung up first, properly. |
+| **Closed locally** | This machine hung up, properly. |
+| **Process exited** | The application closed. Nothing to do with the network. |
+| **Never connected** | The handshake never completed — nothing answered. |
+| **Dropped** | It vanished mid-conversation with no shutdown at all. |
+
+Only **Dropped** is a fault, and it's shown in red for that reason — the others
+are normal endings, however abruptly your application may have reported them.
+
 ## Adapters
 
 Everything `ipconfig /all` would tell you, without reading `ipconfig /all`:

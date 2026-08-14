@@ -151,7 +151,7 @@ fn read_v6(names: &HashMap<u32, String>) -> Result<Vec<Connection>, String> {
 ///
 /// A failure here is not fatal: an unnamed row is still a useful row, so this
 /// returns an empty map rather than an error.
-fn process_names() -> HashMap<u32, String> {
+pub fn process_names() -> HashMap<u32, String> {
     let mut out = HashMap::new();
 
     // SAFETY: a snapshot handle is returned or the call fails; closed below.

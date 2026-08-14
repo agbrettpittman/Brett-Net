@@ -2,7 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CounterSample } from './traffic';
 import type { AwakeMode } from './keepAwake';
-import type { Connection } from './connections';
+import type { Connection, WatchEvent, WatchSpec } from './connections';
 
 /** Mirrors `icmp::PingStatus`. */
 export type PingStatus =
@@ -333,6 +333,32 @@ export function onKeepAwakeExpired(handler: () => void): Promise<UnlistenFn> {
 /** Every open TCP connection, with the process that owns it. */
 export function listConnections(): Promise<Connection[]> {
   return invoke<Connection[]>('list_connections');
+}
+
+export const WATCH_EVENT = 'conn://watch';
+
+/**
+ * Replaces the whole set of watched connections.
+ *
+ * The frontend owns the list, so there is no add/remove drift between the two
+ * sides to reconcile.
+ */
+export function setWatches(watches: WatchSpec[]): Promise<void> {
+  return invoke('set_watches', { watches });
+}
+
+/** The watch event log, newest last. Survives a UI reload. */
+export function watchEvents(): Promise<WatchEvent[]> {
+  return invoke<WatchEvent[]>('watch_events');
+}
+
+export function clearWatchEvents(): Promise<void> {
+  return invoke('clear_watch_events');
+}
+
+/** Fires as a watched connection drops or comes back. */
+export function onWatchEvent(handler: (e: WatchEvent) => void): Promise<UnlistenFn> {
+  return listen<WatchEvent>(WATCH_EVENT, (event) => handler(event.payload));
 }
 
 /** One read of every interface's cumulative byte counters. */
