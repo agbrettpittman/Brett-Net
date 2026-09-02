@@ -47,8 +47,9 @@ struct AppState {
     history: Option<Arc<History>>,
     /// Why history is unavailable, if it is.
     history_error: Option<String>,
-    /// Cancel flag for the trace in flight, if any. Only one runs at a time.
-    trace_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// Cancel flag for the long-running probe in flight — a traceroute or a port
+    /// scan, which share it because only one is ever useful at a time.
+    probe_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Network names for hop addresses, kept for the life of the process.
     asn: Arc<AsnCache>,
     /// Owns the thread holding any wake lock. Never rebuilt — the lock belongs
@@ -59,7 +60,7 @@ struct AppState {
     /// Recent watch events, so the log outlives a UI reload.
     watch_log: Mutex<std::collections::VecDeque<conn::watch::WatchEvent>>,
     /// Cancel flag for the diagnosis in flight. Deliberately **not** shared with
-    /// `trace_cancel`: a diagnosis runs unattended after a drop, and having a
+    /// `probe_cancel`: a diagnosis runs unattended after a drop, and having a
     /// manual traceroute silently kill it — or the reverse — would be baffling.
     diag_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// Held for the length of a diagnosis, so a burst of drops cannot stack six
@@ -366,7 +367,7 @@ async fn run_trace(
     // Replace any trace already running rather than interleaving two.
     let flag = Arc::new(AtomicBool::new(false));
     if let Some(previous) = state
-        .trace_cancel
+        .probe_cancel
         .lock()
         .unwrap()
         .replace(Arc::clone(&flag))
@@ -397,8 +398,8 @@ async fn run_trace(
 }
 
 #[tauri::command]
-fn stop_trace(state: tauri::State<'_, AppState>) {
-    if let Some(flag) = state.trace_cancel.lock().unwrap().take() {
+fn stop_probe(state: tauri::State<'_, AppState>) {
+    if let Some(flag) = state.probe_cancel.lock().unwrap().take() {
         flag.store(true, Ordering::Relaxed);
     }
 }
@@ -649,8 +650,8 @@ const SCAN_DETAIL_LIMIT: usize = 64;
 
 /// Checks TCP ports on a host, reporting results as they finish.
 ///
-/// Shares the trace cancel flag: both are "the one long-running probe", and
-/// only one of them is ever useful at a time.
+/// Shares `probe_cancel` with the traceroute: both are "the one long-running
+/// probe", and only one of them is ever useful at a time.
 #[tauri::command]
 async fn scan_ports(
     state: tauri::State<'_, AppState>,
@@ -660,7 +661,7 @@ async fn scan_ports(
 ) -> Result<(), String> {
     let flag = Arc::new(AtomicBool::new(false));
     if let Some(previous) = state
-        .trace_cancel
+        .probe_cancel
         .lock()
         .unwrap()
         .replace(Arc::clone(&flag))
@@ -828,7 +829,7 @@ pub fn run() {
                 monitor: Mutex::new(None),
                 history,
                 history_error,
-                trace_cancel: Mutex::new(None),
+                probe_cancel: Mutex::new(None),
                 asn: Arc::new(AsnCache::default()),
                 awake: {
                     let handle = app.handle().clone();
@@ -856,7 +857,7 @@ pub fn run() {
             history_stats,
             export_history,
             run_trace,
-            stop_trace,
+            stop_probe,
             lookup_asn,
             dns_lookup,
             scan_ports,

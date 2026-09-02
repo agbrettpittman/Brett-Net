@@ -3,7 +3,7 @@ import {
   COMMON_PORTS,
   dnsLookup,
   scanPorts,
-  stopTrace,
+  stopProbe,
   type DnsResult,
   type PortResult,
   type PortState,
@@ -149,7 +149,7 @@ export function DnsView() {
   }, [host, scanning, parsed.error, parsed.ports, timeoutMs]);
 
   const stop = useCallback(() => {
-    stopTrace().catch(() => {});
+    stopProbe().catch(() => {});
   }, []);
 
   const changePorts = useCallback((v: string) => {

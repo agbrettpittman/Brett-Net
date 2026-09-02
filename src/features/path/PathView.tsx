@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import {
   lookupAsn,
   runTrace,
-  stopTrace,
+  stopProbe,
   TRACE_DEFAULTS,
   type AsnInfo,
   type TraceHop,
@@ -119,7 +119,7 @@ export function PathView() {
   }, [target, running, silentLimit, nameNetworks]);
 
   const stop = useCallback(() => {
-    stopTrace().catch(() => {});
+    stopProbe().catch(() => {});
   }, []);
 
   const changeSilentLimit = useCallback((v: number) => {

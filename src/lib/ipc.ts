@@ -232,8 +232,9 @@ export function runTrace(
   return invoke('run_trace', { target, config, onEvent: channel });
 }
 
-export function stopTrace(): Promise<void> {
-  return invoke('stop_trace');
+/** Cancels whichever long-running probe is running — a traceroute or a port scan. */
+export function stopProbe(): Promise<void> {
+  return invoke('stop_probe');
 }
 
 /** Mirrors `probe::DnsResult`. */
