@@ -1,6 +1,6 @@
 [package]
 name = "brett-net"
-version = "0.1.2"
+version = "0.1.3"
 description = "Network monitoring toolkit"
 authors = ["Brett Pittman"]
 edition = "2021"
