@@ -3,6 +3,7 @@ import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { HostSpec } from '../../lib/ipc';
 import type { SeriesStore } from '../../lib/series';
+import { formatMs } from '../../lib/stats';
 import { chartTheme, seriesStyle } from '../../lib/palette';
 import { latencyRange, withLanes } from '../../lib/chartScale';
 import { windowAndBucket } from '../../lib/aggregate';
@@ -43,6 +44,14 @@ export function LatencyChart({
   const chart = useRef<uPlot | null>(null);
   const zoomedRef = useRef(false);
   const [zoomed, setZoomed] = useState(false);
+  /** Cursor readout: pixel position plus the hovered bucket's values, or null. */
+  const [hover, setHover] = useState<{
+    left: number;
+    top: number;
+    flipX: boolean;
+    t: number;
+    values: (number | null)[];
+  } | null>(null);
   /** Non-zero while any host is showing a down lane; drives the zero baseline. */
   const laneStep = useRef(0);
   /** Axis range computed in build(); the y scale reads it verbatim. */
@@ -140,6 +149,29 @@ export function LatencyChart({
             if (u.select.width > 0) setZoom(true);
           },
         ],
+        setCursor: [
+          (u) => {
+            const idx = u.cursor.idx;
+            // Null while the pointer is off the plot, or mid drag-select where a
+            // readout would just be in the way.
+            if (idx == null || u.select.width > 0) {
+              setHover(null);
+              return;
+            }
+            const dpr = window.devicePixelRatio || 1;
+            const left = u.bbox.left / dpr + (u.cursor.left ?? 0);
+            const top = u.bbox.top / dpr + (u.cursor.top ?? 0);
+            setHover({
+              left,
+              top,
+              flipX: (u.cursor.left ?? 0) > u.bbox.width / dpr / 2,
+              t: u.data[0][idx] as number,
+              // Latency series only — lanes and connectors follow but are status,
+              // not a measurement.
+              values: hosts.map((_, i) => (u.data[i + 1]?.[idx] ?? null) as number | null),
+            });
+          },
+        ],
         // Mark the divider, so the lanes below it read as "not responding"
         // rather than as unusually low latency.
         draw: [
@@ -231,10 +263,16 @@ export function LatencyChart({
   }, [hostKey, theme]);
 
   // Changing the span or bucket changes the data domain entirely, so any zoom
-  // into the old domain is meaningless.
+  // into the old domain is meaningless. A stale hover readout would point at a
+  // bucket that no longer exists, so drop it too — here and when hosts change.
   useEffect(() => {
     setZoom(false);
+    setHover(null);
   }, [spanSec, bucketSec]);
+
+  useEffect(() => {
+    setHover(null);
+  }, [hostKey]);
 
   useEffect(() => {
     // resetScales: false keeps a user's zoom. When not zoomed it must stay true,
@@ -258,6 +296,37 @@ export function LatencyChart({
         >
           Reset zoom
         </button>
+      )}
+      {hover && (
+        <div
+          className="pointer-events-none absolute z-10 min-w-[8rem] max-w-[16rem] rounded-md border border-border bg-surface/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+          style={{
+            left: hover.left + (hover.flipX ? -12 : 12),
+            top: hover.top,
+            transform: `translateY(-50%)${hover.flipX ? ' translateX(-100%)' : ''}`,
+          }}
+        >
+          <div className="mb-1 font-mono text-[11px] text-text-muted">
+            {new Date(hover.t * 1000).toLocaleTimeString(undefined, { hour12: false })}
+          </div>
+          <ul className="space-y-0.5">
+            {hosts.map((h, i) => {
+              const v = hover.values[i];
+              return (
+                <li key={h.id} className="flex items-center gap-1.5">
+                  <span
+                    className="size-2 shrink-0 rounded-[2px]"
+                    style={{ background: h.color ?? seriesStyle(i, theme).stroke }}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{h.label}</span>
+                  <span className="shrink-0 font-mono tabular-nums">
+                    {v == null ? <span className="text-text-muted">no reply</span> : formatMs(v)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
     </div>
   );
