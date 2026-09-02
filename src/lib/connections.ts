@@ -105,6 +105,41 @@ export function sortConnections(connections: Connection[]): Connection[] {
   });
 }
 
+export interface ConnectionGroup {
+  /** Stable across refreshes, and the React key. */
+  key: string;
+  /** The socket that represents the group in the table. */
+  lead: Connection;
+  /** Every socket in the group, `lead` included. Length 1 unless pooled. */
+  members: Connection[];
+}
+
+/**
+ * Folds established sockets sharing a process and a remote endpoint into one
+ * group — a pool of six connections to one server is one conversation, not six
+ * rows. Everything else (listeners, closing sockets) stays one per group, so
+ * the only visible change is pools collapsing.
+ *
+ * Input order is kept: a group sits where its first member was, so a sorted
+ * list stays sorted.
+ */
+export function groupConnections(connections: Connection[]): ConnectionGroup[] {
+  const groups = new Map<string, ConnectionGroup>();
+
+  for (const c of connections) {
+    // A listener or a Time-wait remnant is individually meaningful; only a live,
+    // attributable pool collapses.
+    const poolable = c.state === 'Established' && c.process !== null;
+    const key = poolable ? `pool:${c.process}:${c.remoteAddr}:${c.remotePort}` : `one:${c.id}`;
+
+    const existing = groups.get(key);
+    if (existing) existing.members.push(c);
+    else groups.set(key, { key, lead: c, members: [c] });
+  }
+
+  return [...groups.values()];
+}
+
 /** Mirrors `conn::watch::WatchSpec`. */
 export interface WatchSpec {
   id: string;

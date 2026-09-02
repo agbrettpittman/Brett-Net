@@ -4,6 +4,7 @@ import {
   DEFAULT_FILTER,
   endpoint,
   filterConnections,
+  groupConnections,
   isListener,
   isLoopback,
   isFault,
@@ -159,6 +160,52 @@ describe('sortConnections', () => {
     const rows = [conn({ state: 'Listen' }), conn({ state: 'Established' })];
     sortConnections(rows);
     expect(rows[0]!.state).toBe('Listen');
+  });
+});
+
+describe('groupConnections', () => {
+  it('folds a pool to one peer into a single group', () => {
+    const rows = [
+      conn({ id: 'a', process: 'drive.exe', remoteAddr: '1.2.3.4', remotePort: 443, localPort: 5001 }),
+      conn({ id: 'b', process: 'drive.exe', remoteAddr: '1.2.3.4', remotePort: 443, localPort: 5002 }),
+      conn({ id: 'c', process: 'drive.exe', remoteAddr: '1.2.3.4', remotePort: 443, localPort: 5003 }),
+    ];
+    const groups = groupConnections(rows);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.members).toHaveLength(3);
+    expect(groups[0]!.lead.id).toBe('a');
+  });
+
+  it('keeps distinct peers and distinct processes apart', () => {
+    const rows = [
+      conn({ id: 'a', process: 'drive.exe', remoteAddr: '1.2.3.4' }),
+      conn({ id: 'b', process: 'drive.exe', remoteAddr: '5.6.7.8' }),
+      conn({ id: 'c', process: 'chrome.exe', remoteAddr: '1.2.3.4' }),
+    ];
+    expect(groupConnections(rows)).toHaveLength(3);
+  });
+
+  it('never pools listeners, closing sockets, or unnamed rows', () => {
+    const rows = [
+      conn({ id: 'a', state: 'Listen', process: 'svc.exe', remoteAddr: '0.0.0.0', remotePort: 0 }),
+      conn({ id: 'b', state: 'Listen', process: 'svc.exe', remoteAddr: '0.0.0.0', remotePort: 0 }),
+      conn({ id: 'c', state: 'Time wait' }),
+      conn({ id: 'd', state: 'Time wait' }),
+      conn({ id: 'e', state: 'Established', process: null }),
+      conn({ id: 'f', state: 'Established', process: null }),
+    ];
+    expect(groupConnections(rows).every((g) => g.members.length === 1)).toBe(true);
+  });
+
+  it('keeps input order — a sorted list stays sorted', () => {
+    const rows = [
+      conn({ id: 'a', process: 'a.exe', remoteAddr: '1.1.1.1' }),
+      conn({ id: 'b', process: 'b.exe', remoteAddr: '2.2.2.2' }),
+      conn({ id: 'c', process: 'a.exe', remoteAddr: '1.1.1.1' }),
+    ];
+    const groups = groupConnections(rows);
+    expect(groups.map((g) => g.lead.process)).toEqual(['a.exe', 'b.exe']);
+    expect(groups[0]!.members.map((c) => c.id)).toEqual(['a', 'c']);
   });
 });
 

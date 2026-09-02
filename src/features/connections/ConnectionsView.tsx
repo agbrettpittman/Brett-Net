@@ -27,6 +27,7 @@ import {
   DEFAULT_FILTER,
   endpoint,
   filterConnections,
+  groupConnections,
   isFault,
   isWatched,
   sortConnections,
@@ -43,6 +44,7 @@ import { readBoolean, write } from '../../lib/prefs';
 
 const ESTABLISHED_KEY = 'connections.establishedOnly';
 const LOOPBACK_KEY = 'connections.hideLoopback';
+const GROUPED_KEY = 'connections.grouped';
 const WATCHES_KEY = 'connections.watches';
 
 /** How often the table is re-read while the tab is showing. */
@@ -77,6 +79,7 @@ export function ConnectionsView({ active }: { active: boolean }) {
   const [hideLoopback, setHideLoopback] = useState(() =>
     readBoolean(localStorage, LOOPBACK_KEY, DEFAULT_FILTER.hideLoopback),
   );
+  const [grouped, setGrouped] = useState(() => readBoolean(localStorage, GROUPED_KEY, true));
   const [watches, setWatchList] = useState<WatchSpec[]>(loadWatches);
   const [events, setEvents] = useState<WatchEvent[]>([]);
   const [reports, setReports] = useState<DiagReport[]>([]);
@@ -151,9 +154,16 @@ export function ConnectionsView({ active }: { active: boolean }) {
   }, []);
 
   const all = connections ?? [];
-  const visible = useMemo(
+  const filtered = useMemo(
     () => sortConnections(filterConnections(all, { search, establishedOnly, hideLoopback })),
     [all, search, establishedOnly, hideLoopback],
+  );
+  const rows = useMemo(
+    () =>
+      grouped
+        ? groupConnections(filtered)
+        : filtered.map((c) => ({ key: c.id, lead: c, members: [c] })),
+    [filtered, grouped],
   );
   const established = countByState(all).get('Established') ?? 0;
 
@@ -197,8 +207,16 @@ export function ConnectionsView({ active }: { active: boolean }) {
             setHideLoopback(on);
           }}
         />
+        <Check
+          label="Group pooled"
+          checked={grouped}
+          onChange={(on) => {
+            write(localStorage, GROUPED_KEY, on);
+            setGrouped(on);
+          }}
+        />
         <span className="ml-auto text-text-muted">
-          {visible.length} shown · {established} established · {all.length} total
+          {rows.length} shown · {established} established · {all.length} total
         </span>
       </div>
 
@@ -238,7 +256,7 @@ export function ConnectionsView({ active }: { active: boolean }) {
           <p className="pt-10 text-center text-xs text-text-muted">Reading connections…</p>
         )}
 
-        {connections !== null && visible.length === 0 && (
+        {connections !== null && rows.length === 0 && (
           <p className="pt-10 text-center text-xs text-text-muted">
             {all.length === 0
               ? 'No TCP connections found.'
@@ -246,7 +264,7 @@ export function ConnectionsView({ active }: { active: boolean }) {
           </p>
         )}
 
-        {visible.length > 0 && (
+        {rows.length > 0 && (
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-text-muted">
@@ -258,64 +276,81 @@ export function ConnectionsView({ active }: { active: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {visible.map((c) => (
-                <tr key={c.id} className="group border-t border-border">
-                  <td className="py-1.5 pr-4">
-                    <span className="flex items-baseline gap-1.5">
-                      <span>{c.process ?? <span className="text-text-muted">unknown</span>}</span>
-                      <span className="font-mono text-[10px] text-text-muted">{c.pid}</span>
-                      {c.v6 && (
-                        <span
-                          className="rounded border border-border px-1 text-[10px] text-text-muted"
-                          title="IPv6"
-                        >
-                          v6
+              {rows.map(({ key, lead: c, members }) => {
+                const n = members.length;
+                return (
+                  <tr key={key} className="group border-t border-border">
+                    <td className="py-1.5 pr-4">
+                      <span className="flex items-baseline gap-1.5">
+                        <span>{c.process ?? <span className="text-text-muted">unknown</span>}</span>
+                        {n > 1 ? (
+                          <span
+                            className="rounded border border-border px-1 text-[10px] text-text-muted"
+                            title={`${n} pooled connections to this peer`}
+                          >
+                            ×{n}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-[10px] text-text-muted">{c.pid}</span>
+                        )}
+                        {c.v6 && (
+                          <span
+                            className="rounded border border-border px-1 text-[10px] text-text-muted"
+                            title="IPv6"
+                          >
+                            v6
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-4 font-mono text-text-muted" data-selectable>
+                      {/* Pooled sockets share the local address but not the port. */}
+                      {n > 1 ? c.localAddr : endpoint(c.localAddr, c.localPort, c.v6)}
+                    </td>
+                    <td className="py-1.5 pr-4 font-mono" data-selectable>
+                      {c.state === 'Listen' ? (
+                        <span className="text-text-muted">listening</span>
+                      ) : (
+                        endpoint(c.remoteAddr, c.remotePort, c.v6)
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-4 text-text-muted">{c.state}</td>
+                    <td className="py-1.5 text-right">
+                      {/* Listeners have no peer to watch. */}
+                      {c.state !== 'Listen' && (
+                        <span className="flex justify-end gap-1">
+                          {/* Widest first, so the row reads left to right as
+                              progressively narrower. */}
+                          {c.process !== null && (
+                            <WatchButton
+                              on={isWatched(watches, c, 'process')}
+                              onClick={() => toggleWatch(c, 'process')}
+                              label="Process"
+                              title={`Watch whether ${c.process} is talking to anything at all. Survives it moving between peers.`}
+                            />
+                          )}
+                          <WatchButton
+                            on={isWatched(watches, c, 'peer')}
+                            onClick={() => toggleWatch(c, 'peer')}
+                            label="Peer"
+                            title={`Watch whether ${c.process ?? 'this process'} is still talking to ${endpoint(c.remoteAddr, c.remotePort, c.v6)}. Survives the pool replacing individual sockets.`}
+                          />
+                          {/* One socket among a pool is not a meaningful thing to
+                              pin — the peer watch is what you want there. */}
+                          {n === 1 && (
+                            <WatchButton
+                              on={isWatched(watches, c, 'socket')}
+                              onClick={() => toggleWatch(c, 'socket')}
+                              label="Socket"
+                              title="Watch this exact connection. Any reconnect counts as a drop."
+                            />
+                          )}
                         </span>
                       )}
-                    </span>
-                  </td>
-                  <td className="py-1.5 pr-4 font-mono text-text-muted" data-selectable>
-                    {endpoint(c.localAddr, c.localPort, c.v6)}
-                  </td>
-                  <td className="py-1.5 pr-4 font-mono" data-selectable>
-                    {c.state === 'Listen' ? (
-                      <span className="text-text-muted">listening</span>
-                    ) : (
-                      endpoint(c.remoteAddr, c.remotePort, c.v6)
-                    )}
-                  </td>
-                  <td className="py-1.5 pr-4 text-text-muted">{c.state}</td>
-                  <td className="py-1.5 text-right">
-                    {/* Listeners have no peer to watch. */}
-                    {c.state !== 'Listen' && (
-                      <span className="flex justify-end gap-1">
-                        {/* Widest first, so the row reads left to right as
-                            progressively narrower. */}
-                        {c.process !== null && (
-                          <WatchButton
-                            on={isWatched(watches, c, 'process')}
-                            onClick={() => toggleWatch(c, 'process')}
-                            label="Process"
-                            title={`Watch whether ${c.process} is talking to anything at all. Survives it moving between peers.`}
-                          />
-                        )}
-                        <WatchButton
-                          on={isWatched(watches, c, 'peer')}
-                          onClick={() => toggleWatch(c, 'peer')}
-                          label="Peer"
-                          title={`Watch whether ${c.process ?? 'this process'} is still talking to ${endpoint(c.remoteAddr, c.remotePort, c.v6)}. Survives the pool replacing individual sockets.`}
-                        />
-                        <WatchButton
-                          on={isWatched(watches, c, 'socket')}
-                          onClick={() => toggleWatch(c, 'socket')}
-                          label="Socket"
-                          title="Watch this exact connection. Any reconnect counts as a drop."
-                        />
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
