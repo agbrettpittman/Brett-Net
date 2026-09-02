@@ -1,12 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import {
+  clearDiagnoses,
   clearWatchEvents,
+  diagnose,
+  diagnoses,
   listConnections,
+  onDiagEvent,
   onWatchEvent,
   setWatches,
+  stopDiagnosis,
   watchEvents,
 } from '../../lib/ipc';
+import {
+  applyDiagEvent,
+  CONCLUSION_LABEL,
+  CONCLUSION_SUMMARY,
+  isProblem,
+  OUTCOME_MARK,
+  type DiagReport,
+  type DiagRun,
+  type DiagStep,
+} from '../../lib/diagnosis';
 import {
   countByState,
   DEFAULT_FILTER,
@@ -64,6 +79,9 @@ export function ConnectionsView({ active }: { active: boolean }) {
   );
   const [watches, setWatchList] = useState<WatchSpec[]>(loadWatches);
   const [events, setEvents] = useState<WatchEvent[]>([]);
+  const [reports, setReports] = useState<DiagReport[]>([]);
+  /** The diagnosis in flight, rung by rung. */
+  const [run, setRun] = useState<DiagRun | null>(null);
 
   /** Guards against a slow reply overwriting a newer one. */
   const request = useRef(0);
@@ -100,6 +118,23 @@ export function ConnectionsView({ active }: { active: boolean }) {
 
     let unlisten: UnlistenFn | undefined;
     onWatchEvent((e) => setEvents((prev) => [...prev, e]))
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => unlisten?.();
+  }, []);
+
+  // Diagnoses run in Rust whether or not this tab is open, so the listener is
+  // mounted once and the reports are read back on load.
+  useEffect(() => {
+    diagnoses().then(setReports).catch(() => {});
+
+    let unlisten: UnlistenFn | undefined;
+    onDiagEvent((e) => {
+      setRun((prev) => applyDiagEvent(prev, e));
+      if (e.event === 'done') setReports((prev) => [...prev, e.report]);
+    })
       .then((fn) => {
         unlisten = fn;
       })
@@ -178,10 +213,22 @@ export function ConnectionsView({ active }: { active: boolean }) {
           watches={watches}
           live={liveWatches}
           events={events}
+          reports={reports}
+          run={run}
           onRemove={(id) => setWatchList((prev) => prev.filter((w) => w.id !== id))}
+          onDiagnose={(id) => {
+            setError(null);
+            diagnose(id).catch((e: unknown) => setError(String(e)));
+          }}
+          onStop={() => {
+            stopDiagnosis().catch(() => {});
+          }}
           onClear={() => {
             clearWatchEvents().catch(() => {});
+            clearDiagnoses().catch(() => {});
             setEvents([]);
+            setReports([]);
+            setRun(null);
           }}
         />
       )}
@@ -281,23 +328,33 @@ function Watched({
   watches,
   live,
   events,
+  reports,
+  run,
   onRemove,
+  onDiagnose,
+  onStop,
   onClear,
 }: {
   watches: WatchSpec[];
   live: Set<string>;
   events: WatchEvent[];
+  reports: DiagReport[];
+  run: DiagRun | null;
   onRemove: (id: string) => void;
+  onDiagnose: (id: string) => void;
+  onStop: () => void;
   onClear: () => void;
 }) {
   // Newest first: the thing that just happened is the thing you came to read.
   const recent = [...events].reverse().slice(0, 8);
+  const finished = [...reports].reverse().slice(0, 4);
+  const running = run !== null && run.conclusion === null;
 
   return (
     <section className="max-h-[45%] shrink-0 overflow-auto border-b border-border bg-surface px-5 py-3">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium">Watching</span>
-        {events.length > 0 && (
+        {(events.length > 0 || reports.length > 0) && (
           <button
             onClick={onClear}
             className="rounded-md border border-border px-2 py-0.5 text-xs text-text-muted transition-colors hover:bg-surface-2 hover:text-text"
@@ -319,9 +376,17 @@ function Watched({
               <span className="font-mono">{w.label}</span>
               <span className="text-text-muted">{WATCH_KIND_LABEL[watchKind(w)].toLowerCase()}</span>
               <button
+                onClick={() => onDiagnose(w.id)}
+                disabled={running}
+                title="Run the same checks a drop would trigger, without waiting for one."
+                className="ml-auto rounded border border-border px-1.5 py-px text-[10px] text-text-muted transition-colors hover:text-text disabled:opacity-40"
+              >
+                Diagnose
+              </button>
+              <button
                 onClick={() => onRemove(w.id)}
                 aria-label={`Stop watching ${w.label}`}
-                className="ml-auto text-text-muted transition-colors hover:text-danger"
+                className="text-text-muted transition-colors hover:text-danger"
               >
                 ✕
               </button>
@@ -329,6 +394,31 @@ function Watched({
           );
         })}
       </ul>
+
+      {running && run && (
+        <div className="mt-3 rounded-md border border-border px-3 py-2">
+          <div className="flex items-baseline gap-2 text-xs">
+            <span className="font-medium">Diagnosing</span>
+            <span className="font-mono text-text-muted">{run.target ?? run.label}</span>
+            <button
+              onClick={onStop}
+              className="ml-auto text-xs text-text-muted transition-colors hover:text-danger"
+            >
+              Stop
+            </button>
+          </div>
+          <Steps steps={run.steps} />
+          <p className="mt-1 text-xs text-text-muted">Checking…</p>
+        </div>
+      )}
+
+      {finished.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {finished.map((r, i) => (
+            <Diagnosis key={`${r.watchId}-${r.at}-${i}`} report={r} open={i === 0} />
+          ))}
+        </ul>
+      )}
 
       {recent.length > 0 && (
         <ul className="mt-3 space-y-1 border-t border-border pt-2">
@@ -355,6 +445,71 @@ function Watched({
         </ul>
       )}
     </section>
+  );
+}
+
+const OUTCOME_COLOR = {
+  pass: 'text-ok',
+  fail: 'text-danger',
+  skipped: 'text-text-muted',
+  unsupported: 'text-text-muted',
+} as const;
+
+function Steps({ steps }: { steps: DiagStep[] }) {
+  if (steps.length === 0) return null;
+
+  return (
+    <ul className="mt-1.5 space-y-0.5">
+      {steps.map((s, i) => (
+        <li key={`${s.kind}-${i}`} className="flex items-baseline gap-2 text-xs">
+          <span className={`w-3 shrink-0 ${OUTCOME_COLOR[s.outcome]}`}>
+            {OUTCOME_MARK[s.outcome]}
+          </span>
+          <span className="w-32 shrink-0 text-text-muted">{s.label}</span>
+          <span className="min-w-0">{s.detail}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One finished report.
+ *
+ * A `<details>` rather than managed state: the newest is open, the rest are one
+ * line each until asked for, and neither needs anything remembered.
+ */
+function Diagnosis({ report, open }: { report: DiagReport; open: boolean }) {
+  const fault = isProblem(report.conclusion);
+
+  return (
+    <li>
+      <details open={open} className="group rounded-md border border-border px-3 py-1.5">
+        <summary className="flex cursor-pointer list-none items-baseline gap-2 text-xs">
+          <span className="shrink-0 text-text-muted transition-transform group-open:rotate-90">
+            ▸
+          </span>
+          <span className="shrink-0 font-mono text-text-muted">
+            {new Date(report.at).toLocaleTimeString(undefined, { hour12: false })}
+          </span>
+          <span className={`shrink-0 font-medium ${fault ? 'text-danger' : 'text-ok'}`}>
+            {CONCLUSION_LABEL[report.conclusion]}
+          </span>
+          <span className="truncate font-mono text-text-muted">{report.label}</span>
+          {report.manual && (
+            <span
+              className="ml-auto shrink-0 rounded border border-border px-1 text-[10px] text-text-muted"
+              title="Run from the Diagnose button rather than by a drop"
+            >
+              manual
+            </span>
+          )}
+        </summary>
+
+        <p className="mt-1 text-xs text-text-muted">{CONCLUSION_SUMMARY[report.conclusion]}</p>
+        <Steps steps={report.steps} />
+      </details>
+    </li>
   );
 }
 

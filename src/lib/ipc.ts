@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { CounterSample } from './traffic';
 import type { AwakeMode } from './keepAwake';
 import type { Connection, WatchEvent, WatchSpec } from './connections';
+import type { DiagEvent, DiagReport } from './diagnosis';
 
 /** Mirrors `icmp::PingStatus`. */
 export type PingStatus =
@@ -359,6 +360,37 @@ export function clearWatchEvents(): Promise<void> {
 /** Fires as a watched connection drops or comes back. */
 export function onWatchEvent(handler: (e: WatchEvent) => void): Promise<UnlistenFn> {
   return listen<WatchEvent>(WATCH_EVENT, (event) => handler(event.payload));
+}
+
+export const DIAG_EVENT = 'conn://diagnosis';
+
+/**
+ * Runs the failure ladder against a watch on demand.
+ *
+ * The same one an abrupt drop triggers by itself. Rejects if a diagnosis is
+ * already running — only one runs at a time, so a burst of drops cannot stack
+ * traceroutes.
+ */
+export function diagnose(watchId: string): Promise<void> {
+  return invoke('diagnose', { watchId });
+}
+
+export function stopDiagnosis(): Promise<void> {
+  return invoke('stop_diagnosis');
+}
+
+/** Recent diagnosis reports, newest last. Survives a UI reload. */
+export function diagnoses(): Promise<DiagReport[]> {
+  return invoke<DiagReport[]>('diagnoses');
+}
+
+export function clearDiagnoses(): Promise<void> {
+  return invoke('clear_diagnoses');
+}
+
+/** Fires for each rung of a diagnosis as it completes, then once with the report. */
+export function onDiagEvent(handler: (e: DiagEvent) => void): Promise<UnlistenFn> {
+  return listen<DiagEvent>(DIAG_EVENT, (event) => handler(event.payload));
 }
 
 /** One read of every interface's cumulative byte counters. */

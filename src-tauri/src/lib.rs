@@ -10,6 +10,7 @@ pub mod asn;
 pub mod awake;
 pub mod conn;
 pub mod db;
+pub mod diag;
 pub mod icmp;
 pub mod monitor;
 pub mod probe;
@@ -31,6 +32,9 @@ pub const KEEP_AWAKE_EXPIRED_EVENT: &str = "keep-awake://expired";
 
 /// Emitted when a watched connection drops or comes back.
 pub const WATCH_EVENT: &str = "conn://watch";
+
+/// Emitted as a connection diagnosis runs, one message per rung.
+pub const DIAG_EVENT: &str = "conn://diagnosis";
 
 /// How long a resolved hostname is trusted before re-resolving.
 const DNS_TTL: Duration = Duration::from_secs(300);
@@ -54,6 +58,15 @@ struct AppState {
     watcher: Mutex<conn::watch::Watcher>,
     /// Recent watch events, so the log outlives a UI reload.
     watch_log: Mutex<std::collections::VecDeque<conn::watch::WatchEvent>>,
+    /// Cancel flag for the diagnosis in flight. Deliberately **not** shared with
+    /// `trace_cancel`: a diagnosis runs unattended after a drop, and having a
+    /// manual traceroute silently kill it — or the reverse — would be baffling.
+    diag_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// Held for the length of a diagnosis, so a burst of drops cannot stack six
+    /// traceroutes on top of each other.
+    diag_busy: Arc<AtomicBool>,
+    /// Recent diagnosis reports, newest last.
+    diag_log: Mutex<std::collections::VecDeque<diag::Report>>,
 }
 
 #[derive(Serialize)]
@@ -445,6 +458,149 @@ fn clear_watch_events(state: tauri::State<'_, AppState>) {
     state.watch_log.lock().unwrap().clear();
 }
 
+/// Reports kept in memory. Smaller than the event log because each one is a
+/// dozen lines rather than one.
+const DIAG_LOG_LIMIT: usize = 50;
+
+/// Runs the ladder against one watch, streaming each rung as it completes.
+///
+/// Returns immediately; the work happens on a blocking thread because every rung
+/// is a synchronous network call.
+fn spawn_diagnosis(
+    app: tauri::AppHandle,
+    watch_id: String,
+    label: String,
+    peer: Option<(String, u16)>,
+    manual: bool,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+
+    // Claim the slot before anything else, so two drops in the same second
+    // cannot both start.
+    if state
+        .diag_busy
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("a diagnosis is already running".into());
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.diag_cancel.lock().unwrap() = Some(Arc::clone(&cancel));
+    let busy = Arc::clone(&state.diag_busy);
+
+    let target: Option<std::net::SocketAddr> = peer.as_ref().and_then(|(addr, port)| {
+        addr.parse()
+            .ok()
+            .map(|ip| std::net::SocketAddr::new(ip, *port))
+    });
+
+    tauri::async_runtime::spawn(async move {
+        let at = db::now_ms();
+        let _ = app.emit(
+            DIAG_EVENT,
+            &diag::DiagEvent::Started {
+                watch_id: watch_id.clone(),
+                label: label.clone(),
+                target: target.map(|t| t.to_string()),
+                at,
+                manual,
+            },
+        );
+
+        let emitter = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let probes = diag::LiveProbes {
+                backend: Arc::new(platform_backend()),
+                cancelled: cancel,
+            };
+            diag::run(target, &probes, &mut |step| {
+                let _ = emitter.emit(DIAG_EVENT, &diag::DiagEvent::Step { step: step.clone() });
+            })
+        })
+        .await;
+
+        // Released before the report is published, so a "diagnose again" from
+        // the UI cannot lose a race with its own result arriving.
+        busy.store(false, Ordering::Release);
+
+        let Ok((steps, conclusion)) = result else {
+            return;
+        };
+        let report = diag::Report {
+            watch_id,
+            label,
+            at,
+            target: target.map(|t| t.to_string()),
+            manual,
+            steps,
+            conclusion,
+        };
+
+        let _ = app.emit(
+            DIAG_EVENT,
+            &diag::DiagEvent::Done {
+                report: report.clone(),
+            },
+        );
+
+        let state = app.state::<AppState>();
+        let mut log = state.diag_log.lock().unwrap();
+        log.push_back(report);
+        while log.len() > DIAG_LOG_LIMIT {
+            log.pop_front();
+        }
+    });
+
+    Ok(())
+}
+
+/// Diagnoses a watch on demand.
+///
+/// The same ladder a drop triggers, which is the point: it is how the automatic
+/// path gets exercised without waiting for a real failure.
+#[tauri::command]
+async fn diagnose(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    watch_id: String,
+) -> Result<(), String> {
+    let spec = {
+        let watcher = state.watcher.lock().unwrap();
+        watcher
+            .specs()
+            .iter()
+            .find(|s| s.id == watch_id)
+            .cloned()
+            .ok_or_else(|| format!("no watch named {watch_id}"))?
+    };
+
+    // A fresh snapshot, because the peer a process watch is talking to now is
+    // better evidence than anything the spec could carry.
+    let snapshot = blocking(conn::list).await.unwrap_or_default();
+    let peer = conn::watch::target(&spec, &snapshot);
+
+    spawn_diagnosis(app, spec.id, spec.label, peer, true)
+}
+
+#[tauri::command]
+fn stop_diagnosis(state: tauri::State<'_, AppState>) {
+    if let Some(flag) = state.diag_cancel.lock().unwrap().take() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Recent diagnosis reports, newest last.
+#[tauri::command]
+fn diagnoses(state: tauri::State<'_, AppState>) -> Vec<diag::Report> {
+    state.diag_log.lock().unwrap().iter().cloned().collect()
+}
+
+#[tauri::command]
+fn clear_diagnoses(state: tauri::State<'_, AppState>) {
+    state.diag_log.lock().unwrap().clear();
+}
+
 /// One read of every interface's byte counters.
 ///
 /// Polled rather than pushed: it is a single cheap call, and leaving the timing
@@ -619,13 +775,33 @@ fn spawn_watch_loop(app: tauri::AppHandle) {
                 continue;
             }
 
-            let mut log = state.watch_log.lock().unwrap();
-            for event in events {
-                let _ = app.emit(WATCH_EVENT, &event);
-                log.push_back(event);
-                while log.len() > WATCH_LOG_LIMIT {
-                    log.pop_front();
+            let mut faults = Vec::new();
+            {
+                let mut log = state.watch_log.lock().unwrap();
+                for event in events {
+                    let _ = app.emit(WATCH_EVENT, &event);
+                    // Only an abrupt drop earns a round of probing. Diagnosing
+                    // every disappearance would mean a browser closing a
+                    // keep-alive kicks off a traceroute.
+                    if event
+                        .verdict
+                        .is_some_and(conn::watch::Verdict::needs_diagnosis)
+                    {
+                        faults.push(event.clone());
+                    }
+                    log.push_back(event);
+                    while log.len() > WATCH_LOG_LIMIT {
+                        log.pop_front();
+                    }
                 }
+            }
+
+            for fault in faults {
+                let peer = fault.target_addr.zip(fault.target_port);
+                // A second fault while one is being diagnosed is dropped rather
+                // than queued: by the time a queued diagnosis ran, it would be
+                // measuring a different network.
+                let _ = spawn_diagnosis(app.clone(), fault.watch_id, fault.label, peer, false);
             }
         }
     });
@@ -662,6 +838,9 @@ pub fn run() {
                 },
                 watcher: Mutex::new(conn::watch::Watcher::new()),
                 watch_log: Mutex::new(std::collections::VecDeque::new()),
+                diag_cancel: Mutex::new(None),
+                diag_busy: Arc::new(AtomicBool::new(false)),
+                diag_log: Mutex::new(std::collections::VecDeque::new()),
             });
 
             spawn_watch_loop(app.handle().clone());
@@ -687,7 +866,11 @@ pub fn run() {
             list_connections,
             set_watches,
             watch_events,
-            clear_watch_events
+            clear_watch_events,
+            diagnose,
+            stop_diagnosis,
+            diagnoses,
+            clear_diagnoses
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

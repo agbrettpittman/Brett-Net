@@ -89,6 +89,14 @@ pub struct WatchEvent {
     /// Absent on a recovery.
     pub verdict: Option<Verdict>,
     pub detail: String,
+    /// The peer this watch was last talking to, as `address:port`.
+    ///
+    /// Carried on the event rather than read from the spec because **a
+    /// whole-process watch names no peer of its own** — without this, the only
+    /// watch width that survives an application moving between front-ends would
+    /// be the one that could not be diagnosed.
+    pub target_addr: Option<String>,
+    pub target_port: Option<u16>,
 }
 
 /// States in which a connection is carrying, or about to carry, traffic.
@@ -150,6 +158,25 @@ pub fn remnants<'a>(before: &[&Connection], snapshot: &'a [Connection]) -> Vec<&
         .iter()
         .filter(|c| ids.contains(c.id.as_str()))
         .collect()
+}
+
+/// The peer a set of connections was talking to.
+///
+/// An established socket wins over a half-open handshake: it is the conversation
+/// that was actually working, and so the one worth probing.
+pub fn last_peer(connections: &[&Connection]) -> Option<(String, u16)> {
+    let established = connections.iter().find(|c| c.state == "Established");
+    let c = established.or_else(|| connections.iter().find(|c| is_live(&c.state)))?;
+    Some((c.remote_addr.clone(), c.remote_port))
+}
+
+/// The peer to probe for a watch: whatever it is talking to now, falling back to
+/// the one its spec names.
+///
+/// The fallback is what lets a diagnosis run on demand for a watch that is
+/// already down.
+pub fn target(spec: &WatchSpec, snapshot: &[Connection]) -> Option<(String, u16)> {
+    last_peer(&matching(spec, snapshot)).or_else(|| spec.remote_addr.clone().zip(spec.remote_port))
 }
 
 /// Whether the watch is satisfied right now.
@@ -275,14 +302,19 @@ impl Watcher {
                 // report a drop that happened before the watch existed.
                 None => {}
                 Some(was) if was == now_up => {}
-                Some(false) => events.push(WatchEvent {
-                    watch_id: spec.id.clone(),
-                    label: spec.label.clone(),
-                    at,
-                    up: true,
-                    verdict: None,
-                    detail: "Connected again.".into(),
-                }),
+                Some(false) => {
+                    let peer = last_peer(&matching(spec, &snapshot));
+                    events.push(WatchEvent {
+                        watch_id: spec.id.clone(),
+                        label: spec.label.clone(),
+                        at,
+                        up: true,
+                        verdict: None,
+                        detail: "Connected again.".into(),
+                        target_addr: peer.as_ref().map(|(a, _)| a.clone()),
+                        target_port: peer.map(|(_, p)| p),
+                    })
+                }
                 Some(true) => {
                     let running = match &spec.process {
                         Some(name) => processes.contains(&name.to_ascii_lowercase()),
@@ -291,6 +323,9 @@ impl Watcher {
                     let before = matching(spec, &self.previous);
                     let (verdict, detail) =
                         classify(&before, &remnants(&before, &snapshot), running);
+                    // Taken from the *previous* snapshot: by now the socket is
+                    // gone, and this is the last moment its peer is knowable.
+                    let peer = last_peer(&before);
                     events.push(WatchEvent {
                         watch_id: spec.id.clone(),
                         label: spec.label.clone(),
@@ -298,6 +333,8 @@ impl Watcher {
                         up: false,
                         verdict: Some(verdict),
                         detail,
+                        target_addr: peer.as_ref().map(|(a, _)| a.clone()),
+                        target_port: peer.map(|(_, p)| p),
                     });
                 }
             }
@@ -794,6 +831,67 @@ mod tests {
         let events = w.tick(vec![conn(&[])], &procs, 1);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].watch_id, "w2");
+    }
+
+    #[test]
+    fn a_drop_records_the_peer_it_was_talking_to() {
+        // Without this a process watch could never be diagnosed: its spec names
+        // no peer, and by the time the drop is noticed the socket is gone.
+        let mut w = Watcher::new();
+        w.set_specs(vec![process_spec()]);
+        let procs = running(&["googledrivefs.exe"]);
+
+        w.tick(
+            vec![conn(&[
+                ("process", "GoogleDriveFS.exe"),
+                ("remote", "142.250.72.14"),
+                ("port", "443"),
+            ])],
+            &procs,
+            0,
+        );
+        let events = w.tick(vec![], &procs, 1);
+
+        assert_eq!(events[0].target_addr.as_deref(), Some("142.250.72.14"));
+        assert_eq!(events[0].target_port, Some(443));
+    }
+
+    #[test]
+    fn an_established_socket_names_the_peer_over_a_half_open_one() {
+        // The conversation that was working is the one worth probing.
+        let syn = conn(&[("state", "SYN sent"), ("remote", "9.9.9.9"), ("id", "a")]);
+        let up = conn(&[("remote", "1.1.1.1"), ("id", "b")]);
+
+        assert_eq!(last_peer(&[&syn, &up]), Some(("1.1.1.1".to_string(), 443)));
+    }
+
+    #[test]
+    fn wreckage_names_no_peer() {
+        let dead = conn(&[("state", "Time wait")]);
+        assert_eq!(last_peer(&[&dead]), None);
+        assert_eq!(last_peer(&[]), None);
+    }
+
+    #[test]
+    fn a_target_falls_back_to_the_spec_when_nothing_is_connected() {
+        // What makes an on-demand diagnosis possible for a watch that is
+        // already down.
+        assert_eq!(
+            target(&spec(), &[]),
+            Some(("1.1.1.1".to_string(), 443)),
+            "an endpoint watch names its own peer"
+        );
+        // A process watch does not, so there is genuinely nothing to probe.
+        assert_eq!(target(&process_spec(), &[]), None);
+    }
+
+    #[test]
+    fn a_live_connection_outranks_the_spec_as_a_target() {
+        let live = conn(&[("process", "GoogleDriveFS.exe"), ("remote", "8.8.4.4")]);
+        assert_eq!(
+            target(&process_spec(), &[live]),
+            Some(("8.8.4.4".to_string(), 443))
+        );
     }
 
     #[test]
