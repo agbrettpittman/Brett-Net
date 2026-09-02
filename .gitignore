@@ -6,6 +6,9 @@ src-tauri/gen/
 # Working notes: plan of record and running progress log. Local only.
 .plans/
 
+# Editor tasks/settings. Local only.
+.vscode/
+
 # Updater signing keys must never be committed
 *.key
 *.key.pub
