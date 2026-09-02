@@ -19,6 +19,7 @@ import { SeriesStore } from '../../lib/series';
 import { seriesStyle } from '../../lib/palette';
 import { hostKey, probeBadge } from '../../lib/probeMode';
 import { toCsv } from '../../lib/grid';
+import { nextSort, sortRows, type HostSortKey, type HostSortState } from '../../lib/hostSort';
 import type { Theme } from '../../lib/theme';
 import { AddHosts } from '../../components/AddHosts';
 import { EditHost } from '../../components/EditHost';
@@ -77,6 +78,8 @@ export function PingView({ theme }: { theme: Theme }) {
   const [spanSec, setSpanSec] = useState(300);
   const [retentionDays, setRetentionDays] = useState(7);
   const [exporting, setExporting] = useState(false);
+  /** Table sort. Null keeps the chart's own line order. Session-only. */
+  const [sort, setSort] = useState<HostSortState | null>(null);
 
   // High-frequency data lives outside React state.
   const stats = useRef(new Map<string, HostStats>());
@@ -285,6 +288,8 @@ export function PingView({ theme }: { theme: Theme }) {
     store.current.removeHost(id);
   }, []);
 
+  const onSort = useCallback((key: HostSortKey) => setSort((prev) => nextSort(prev, key)), []);
+
   // Derived from refs, so this recomputes every render by design — the render
   // cadence throttles it, not memoisation.
   const all = [...stats.current.values()];
@@ -299,6 +304,25 @@ export function PingView({ theme }: { theme: Theme }) {
     lossPct: sent === 0 ? 0 : (lost / sent) * 100,
     up: [...lastStatus.current.values()].filter((s) => s === 'success').length,
   };
+
+  // The row's index in `hosts` is carried through the sort so the swatch colour
+  // and the chart line stay in lockstep — `seriesStyle` is keyed on position.
+  const rows = hosts.map((h, i) => {
+    const s = stats.current.get(h.id);
+    return {
+      h,
+      i,
+      s,
+      status: lastStatus.current.get(h.id),
+      label: h.label,
+      target: h.target,
+      last: s?.last ?? null,
+      avg: s?.avg ?? null,
+      jitter: s?.jitter ?? null,
+      lossPct: s ? s.lossPct : null,
+    };
+  });
+  const ordered = sortRows(rows, sort);
 
   return (
     <div className="flex h-full flex-col">
@@ -400,19 +424,17 @@ export function PingView({ theme }: { theme: Theme }) {
         <table className={`w-full text-xs ${hosts.length === 0 ? 'hidden' : ''}`}>
           <thead>
             <tr className="text-left text-text-muted">
-              <th className="pb-2 font-medium">Host</th>
-              <th className="pb-2 font-medium">Target</th>
-              <th className="pb-2 text-right font-medium">Last</th>
-              <th className="pb-2 text-right font-medium">Avg</th>
-              <th className="pb-2 text-right font-medium">Jitter</th>
-              <th className="pb-2 text-right font-medium">Loss</th>
+              <Th label="Host" sortKey="host" sort={sort} onSort={onSort} />
+              <Th label="Target" sortKey="target" sort={sort} onSort={onSort} />
+              <Th label="Last" sortKey="last" align="right" sort={sort} onSort={onSort} />
+              <Th label="Avg" sortKey="avg" align="right" sort={sort} onSort={onSort} />
+              <Th label="Jitter" sortKey="jitter" align="right" sort={sort} onSort={onSort} />
+              <Th label="Loss" sortKey="loss" align="right" sort={sort} onSort={onSort} />
               <th className="pb-2" />
             </tr>
           </thead>
           <tbody>
-            {hosts.map((h, i) => {
-              const s = stats.current.get(h.id);
-              const status = lastStatus.current.get(h.id);
+            {ordered.map(({ h, i, s, status }) => {
               const auto = seriesStyle(i, theme);
               const style = h.color ? { stroke: h.color } : auto;
               const badge = probeBadge(h);
@@ -568,6 +590,38 @@ function Stat({ label, value }: { label: string; value: string }) {
       <span className="text-text-muted">{label}</span>
       <span className="font-mono">{value}</span>
     </span>
+  );
+}
+
+/** A sortable column heading. Clicking cycles off → ascending → descending. */
+function Th({
+  label,
+  sortKey,
+  align = 'left',
+  sort,
+  onSort,
+}: {
+  label: string;
+  sortKey: HostSortKey;
+  align?: 'left' | 'right';
+  sort: HostSortState | null;
+  onSort: (key: HostSortKey) => void;
+}) {
+  const active = sort?.key === sortKey;
+  return (
+    <th className={`pb-2 font-medium ${align === 'right' ? 'text-right' : 'text-left'}`}>
+      <button
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 transition-colors hover:text-text ${
+          active ? 'text-text' : ''
+        }`}
+      >
+        {label}
+        <span aria-hidden className="text-[9px] leading-none">
+          {active ? (sort?.dir === 'asc' ? '▲' : '▼') : ''}
+        </span>
+      </button>
+    </th>
   );
 }
 
