@@ -9,9 +9,9 @@ src-tauri/gen/
 # Editor tasks/settings. Local only.
 .vscode/
 
-# Maintainer-only release helper — needs repo write access and the signing key.
+# Maintainer-only release helpers — need repo write access and the signing key.
 # The committed reference is docs/RELEASING.md.
-scripts/release.sh
+scripts/
 
 # Updater signing keys must never be committed
 *.key
